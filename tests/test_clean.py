@@ -15,7 +15,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.transform.clean import clean_market_prices, calculate_daily_returns
+from src.transform.clean import (
+    calculate_daily_returns,
+    clean_market_prices,
+    detect_price_outliers,
+    validate_ohlcv,
+)
 
 
 class TestCleanMarketPrices:
@@ -83,3 +88,100 @@ class TestCalculateDailyReturns:
         )
         result = calculate_daily_returns(df)
         assert not np.isinf(result["daily_return"]).any()
+
+
+class TestValidateOhlcv:
+    def _valid_row(self, **overrides):
+        row = {
+            "ticker": "AAPL", "date": pd.Timestamp("2026-01-02"),
+            "open": 180.0, "high": 182.5, "low": 179.0, "close": 181.2, "volume": 1000000,
+        }
+        row.update(overrides)
+        return row
+
+    def test_valid_row_passes_through_unchanged(self):
+        df = pd.DataFrame([self._valid_row()])
+        result = validate_ohlcv(df)
+        assert len(result) == 1
+
+    def test_drops_row_where_high_below_low(self):
+        df = pd.DataFrame([self._valid_row(high=170.0, low=179.0)])
+        result = validate_ohlcv(df)
+        assert len(result) == 0
+
+    def test_drops_row_where_high_below_open_or_close(self):
+        df = pd.DataFrame([self._valid_row(high=180.5, close=181.2)])  # close > high
+        result = validate_ohlcv(df)
+        assert len(result) == 0
+
+    def test_drops_row_with_negative_price(self):
+        df = pd.DataFrame([self._valid_row(open=-5.0)])
+        result = validate_ohlcv(df)
+        assert len(result) == 0
+
+    def test_drops_row_with_zero_price(self):
+        df = pd.DataFrame([self._valid_row(close=0.0)])
+        result = validate_ohlcv(df)
+        assert len(result) == 0
+
+    def test_drops_row_with_negative_volume(self):
+        df = pd.DataFrame([self._valid_row(volume=-100)])
+        result = validate_ohlcv(df)
+        assert len(result) == 0
+
+    def test_keeps_valid_rows_and_drops_invalid_in_mixed_input(self):
+        df = pd.DataFrame([self._valid_row(), self._valid_row(high=100.0, low=179.0)])
+        result = validate_ohlcv(df)
+        assert len(result) == 1
+
+    def test_empty_input_returns_empty_dataframe(self):
+        empty = pd.DataFrame(columns=["ticker", "date", "open", "high", "low", "close", "volume"])
+        result = validate_ohlcv(empty)
+        assert len(result) == 0
+
+
+class TestDetectPriceOutliers:
+    def _flat_series(self, ticker="AAPL", n=25, start_price=100.0):
+        dates = pd.date_range("2026-01-01", periods=n, freq="D")
+        return pd.DataFrame({"ticker": ticker, "date": dates, "close": start_price})
+
+    def test_planted_outlier_is_flagged(self):
+        df = self._flat_series(n=25)
+        # Plant a 50% jump on the last day.
+        df.loc[df.index[-1], "close"] = 150.0
+        returns_df = calculate_daily_returns(df)
+        result = detect_price_outliers(returns_df)
+        assert result.iloc[-1]["is_outlier"] == True  # noqa: E712
+
+    def test_normal_noise_is_not_flagged(self):
+        df = self._flat_series(n=25)
+        # Small realistic day-to-day noise, no big jumps.
+        noise = [0, 1, -1, 0.5, -0.5] * 5
+        df["close"] = df["close"] + noise
+        returns_df = calculate_daily_returns(df)
+        result = detect_price_outliers(returns_df)
+        assert result["is_outlier"].sum() == 0
+
+    def test_insufficient_history_is_not_flagged(self):
+        # Fewer than min_periods observations for this ticker — should not
+        # be flagged even with an extreme move, since there's no baseline yet.
+        df = pd.DataFrame({
+            "ticker": "NEW",
+            "date": pd.date_range("2026-01-01", periods=3, freq="D"),
+            "close": [100.0, 100.0, 200.0],
+        })
+        returns_df = calculate_daily_returns(df)
+        result = detect_price_outliers(returns_df)
+        assert result["is_outlier"].sum() == 0
+
+    def test_flat_series_zero_std_is_not_flagged(self):
+        df = self._flat_series(n=25)  # perfectly flat, rolling_std == 0
+        returns_df = calculate_daily_returns(df)
+        result = detect_price_outliers(returns_df)
+        assert result["is_outlier"].sum() == 0
+
+    def test_empty_input_returns_empty_with_is_outlier_column(self):
+        empty = pd.DataFrame(columns=["ticker", "date", "close", "daily_return"])
+        result = detect_price_outliers(empty)
+        assert "is_outlier" in result.columns
+        assert len(result) == 0

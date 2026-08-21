@@ -5,8 +5,12 @@ conversion to SAST/UTC, and derived portfolio metrics (daily returns,
 weighted return, allocation drift). Write pytest cases for each
 function before implementing (TDD requirement).
 """
+import logging
+
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def clean_market_prices(df: pd.DataFrame) -> pd.DataFrame:
@@ -52,30 +56,49 @@ def calculate_daily_returns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def validate_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    """Flag/reject rows with structurally invalid OHLCV data.
+    """Reject rows with structurally invalid OHLCV data.
 
     Expects a cleaned DataFrame (post clean_market_prices) with columns:
     ticker, date, open, high, low, close, volume.
 
-    # TODO: implement, covering at minimum:
-    #   1. Sanity checks per row:
-    #      - high >= low (a day's high can't be below its low)
-    #      - high >= max(open, close) and low <= min(open, close)
-    #      - all of open/high/low/close > 0 (a zero or negative price is
-    #        invalid for equities/bonds, not a legitimate market value)
-    #      - volume >= 0
-    #   2. Decide and document the failure policy: either drop invalid rows
-    #      (mirroring clean_market_prices's drop-on-missing-close approach)
-    #      or return them separately for a data-quality report. Whichever
-    #      you choose, don't silently pass invalid rows downstream to
-    #      calculate_daily_returns or the loader.
-    #   3. Add a `flag` or `is_valid` column if you choose to keep-and-flag
-    #      rather than drop, so downstream code can filter deliberately.
-    #   4. Write tests in tests/test_clean.py (new TestValidateOhlcv class)
-    #      covering: high < low, negative price, negative volume, and a
-    #      fully valid row that should pass through unchanged.
+    Policy: DROP invalid rows (mirrors clean_market_prices's drop-on-
+    missing-close approach) rather than flag-and-pass-through, so a
+    structurally impossible row (e.g. high < low) never reaches
+    calculate_daily_returns or the loader. Dropped-row counts are logged
+    here so a bad source is visible in the pipeline run summary rather
+    than silently disappearing.
+
+    A row is valid iff all of:
+      - high >= low
+      - high >= max(open, close) and low <= min(open, close)
+      - open, high, low, close are all > 0
+      - volume >= 0
     """
-    raise NotImplementedError("TODO: implement OHLCV validation")
+    df = df.copy()
+
+    if df.empty:
+        return df
+
+    is_valid = (
+        (df["high"] >= df["low"])
+        & (df["high"] >= df[["open", "close"]].max(axis=1))
+        & (df["low"] <= df[["open", "close"]].min(axis=1))
+        & (df["open"] > 0)
+        & (df["high"] > 0)
+        & (df["low"] > 0)
+        & (df["close"] > 0)
+        & (df["volume"] >= 0)
+    )
+
+    dropped = int((~is_valid).sum())
+    if dropped:
+        logger.warning(
+            "validate_ohlcv: dropping %d structurally invalid row(s) out of %d",
+            dropped,
+            len(df),
+        )
+
+    return df[is_valid].reset_index(drop=True)
 
 
 def detect_price_outliers(df: pd.DataFrame, threshold: float = 3.0) -> pd.DataFrame:
@@ -84,23 +107,46 @@ def detect_price_outliers(df: pd.DataFrame, threshold: float = 3.0) -> pd.DataFr
     Expects df to already have a `daily_return` column (i.e. run this
     after calculate_daily_returns).
 
-    # TODO: implement, one reasonable approach:
-    #   1. Per ticker, compute a rolling mean and std of daily_return
-    #      (e.g. df.groupby("ticker")["daily_return"].rolling(window=20)).
-    #      Decide how to handle the first `window` days per ticker where
-    #      there isn't enough history yet (commonly: leave unflagged).
-    #   2. Compute a z-score per row: (daily_return - rolling_mean) / rolling_std.
-    #      Guard against rolling_std == 0 (flat price series) to avoid
-    #      division by zero — treat those rows as not outliers.
-    #   3. Add an `is_outlier` boolean column: abs(z_score) > threshold.
-    #   4. Decide the pipeline's policy for outliers: flag-only (recommended,
-    #      so a real 20%+ move on real news isn't silently dropped) vs. drop.
-    #      Document the choice in this docstring once implemented.
-    #   5. Write tests: a planted outlier (e.g. a single 50% jump in an
-    #      otherwise flat series) should be flagged; normal day-to-day
-    #      noise should not.
+    Policy: FLAG-ONLY. Outliers are marked via an `is_outlier` column but
+    never dropped here — a real 20%+ move on genuine news is exactly the
+    kind of data an analyst needs to see, not lose. Downstream reporting
+    (the pipeline run summary) surfaces the flagged count; deciding what
+    to do about a specific flagged row is a human/analyst call, not this
+    function's.
+
+    Per ticker, a rolling 20-day mean/std of daily_return is used to
+    compute a z-score; a row within the first `min_periods` observations
+    for its ticker (not enough history yet) is left unflagged rather than
+    guessed at, and a flat series (rolling_std == 0) is treated as not
+    an outlier rather than raising a division-by-zero.
     """
-    raise NotImplementedError("TODO: implement outlier detection")
+    df = df.copy()
+
+    if df.empty:
+        df["is_outlier"] = pd.Series(dtype=bool)
+        return df
+
+    df = df.sort_values(["ticker", "date"])
+
+    window, min_periods = 20, 5
+    grouped_return = df.groupby("ticker")["daily_return"]
+    rolling_mean = grouped_return.transform(
+        lambda s: s.rolling(window=window, min_periods=min_periods).mean()
+    )
+    rolling_std = grouped_return.transform(
+        lambda s: s.rolling(window=window, min_periods=min_periods).std()
+    )
+
+    z_score = (df["daily_return"] - rolling_mean) / rolling_std
+    z_score = z_score.replace([np.inf, -np.inf], np.nan)
+
+    df["is_outlier"] = (z_score.abs() > threshold).fillna(False)
+
+    flagged = int(df["is_outlier"].sum())
+    if flagged:
+        logger.info("detect_price_outliers: flagged %d anomalous row(s)", flagged)
+
+    return df.reset_index(drop=True)
 
 
 def calculate_unrealized_gain_loss(
