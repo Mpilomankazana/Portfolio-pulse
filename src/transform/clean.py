@@ -161,22 +161,41 @@ def calculate_unrealized_gain_loss(
             e.g. the most recent row per asset_id from market_prices).
 
     Returns: holdings_df with added columns: current_price, unrealized_gain_loss,
-    unrealized_gain_loss_pct.
-
-    # TODO: implement:
-    #   1. Merge holdings_df with current_prices_df on asset_id (left join —
-    #      a holding with no matching price should surface as NaN, not
-    #      silently drop the row).
-    #   2. unrealized_gain_loss = (current_price - cost_basis) * quantity
-    #   3. unrealized_gain_loss_pct = (current_price - cost_basis) / cost_basis
-    #      Guard against cost_basis == 0 (division by zero).
-    #   4. Handle missing current_price (asset with no recent market data):
-    #      leave the gain/loss columns as NaN rather than raising, so one
-    #      missing price doesn't break the whole portfolio's report.
-    #   5. Write tests covering: a gain, a loss, a zero-cost-basis edge
-    #      case, and a holding with no matching price row.
+    unrealized_gain_loss_pct. A holding with no matching price, or a zero
+    cost_basis, gets NaN in the affected column(s) rather than raising —
+    one bad/missing input shouldn't break the whole portfolio's report.
     """
-    raise NotImplementedError("TODO: implement unrealized gain/loss calculation")
+    holdings_df = holdings_df.copy()
+
+    if holdings_df.empty:
+        holdings_df["current_price"] = pd.Series(dtype=float)
+        holdings_df["unrealized_gain_loss"] = pd.Series(dtype=float)
+        holdings_df["unrealized_gain_loss_pct"] = pd.Series(dtype=float)
+        return holdings_df
+
+    prices = current_prices_df[["asset_id", "close"]].rename(
+        columns={"close": "current_price"}
+    )
+    merged = holdings_df.merge(prices, on="asset_id", how="left")
+
+    merged["unrealized_gain_loss"] = (
+        merged["current_price"] - merged["cost_basis"]
+    ) * merged["quantity"]
+
+    safe_cost_basis = merged["cost_basis"].replace(0, np.nan)
+    merged["unrealized_gain_loss_pct"] = (
+        merged["current_price"] - merged["cost_basis"]
+    ) / safe_cost_basis
+
+    missing_price = int(merged["current_price"].isna().sum())
+    if missing_price:
+        logger.warning(
+            "calculate_unrealized_gain_loss: %d holding(s) have no matching "
+            "current price and will show NaN gain/loss",
+            missing_price,
+        )
+
+    return merged.reset_index(drop=True)
 
 
 def calculate_portfolio_allocation_drift(
