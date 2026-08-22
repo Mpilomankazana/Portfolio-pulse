@@ -17,6 +17,7 @@ import pytest
 
 from src.transform.clean import (
     calculate_daily_returns,
+    calculate_unrealized_gain_loss,
     clean_market_prices,
     detect_price_outliers,
     validate_ohlcv,
@@ -185,3 +186,68 @@ class TestDetectPriceOutliers:
         result = detect_price_outliers(empty)
         assert "is_outlier" in result.columns
         assert len(result) == 0
+
+
+class TestCalculateUnrealizedGainLoss:
+    def test_gain(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_id": 1, "quantity": 10, "cost_basis": 100.0},
+        ])
+        prices = pd.DataFrame([{"asset_id": 1, "close": 150.0}])
+        result = calculate_unrealized_gain_loss(holdings, prices)
+        row = result.iloc[0]
+        assert row["current_price"] == 150.0
+        assert row["unrealized_gain_loss"] == pytest.approx(500.0)
+        assert row["unrealized_gain_loss_pct"] == pytest.approx(0.5)
+
+    def test_loss(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_id": 2, "quantity": 5, "cost_basis": 200.0},
+        ])
+        prices = pd.DataFrame([{"asset_id": 2, "close": 150.0}])
+        result = calculate_unrealized_gain_loss(holdings, prices)
+        row = result.iloc[0]
+        assert row["unrealized_gain_loss"] == pytest.approx(-250.0)
+        assert row["unrealized_gain_loss_pct"] == pytest.approx(-0.25)
+
+    def test_zero_cost_basis_produces_nan_pct_not_error(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_id": 3, "quantity": 10, "cost_basis": 0.0},
+        ])
+        prices = pd.DataFrame([{"asset_id": 3, "close": 50.0}])
+        result = calculate_unrealized_gain_loss(holdings, prices)
+        row = result.iloc[0]
+        # Dollar gain/loss is still well-defined even with a zero cost basis.
+        assert row["unrealized_gain_loss"] == pytest.approx(500.0)
+        assert pd.isna(row["unrealized_gain_loss_pct"])
+
+    def test_holding_with_no_matching_price_gets_nan(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_id": 4, "quantity": 10, "cost_basis": 100.0},
+        ])
+        prices = pd.DataFrame([{"asset_id": 999, "close": 50.0}])  # no match for asset_id 4
+        result = calculate_unrealized_gain_loss(holdings, prices)
+        row = result.iloc[0]
+        assert pd.isna(row["current_price"])
+        assert pd.isna(row["unrealized_gain_loss"])
+        assert pd.isna(row["unrealized_gain_loss_pct"])
+
+    def test_one_missing_price_does_not_affect_other_holdings(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_id": 1, "quantity": 10, "cost_basis": 100.0},
+            {"portfolio_id": 1, "asset_id": 5, "quantity": 20, "cost_basis": 50.0},
+        ])
+        prices = pd.DataFrame([{"asset_id": 1, "close": 150.0}])  # asset_id 5 missing
+        result = calculate_unrealized_gain_loss(holdings, prices)
+        asset1 = result[result["asset_id"] == 1].iloc[0]
+        asset5 = result[result["asset_id"] == 5].iloc[0]
+        assert asset1["unrealized_gain_loss"] == pytest.approx(500.0)
+        assert pd.isna(asset5["unrealized_gain_loss"])
+
+    def test_empty_holdings_returns_empty_with_expected_columns(self):
+        holdings = pd.DataFrame(columns=["portfolio_id", "asset_id", "quantity", "cost_basis"])
+        prices = pd.DataFrame(columns=["asset_id", "close"])
+        result = calculate_unrealized_gain_loss(holdings, prices)
+        assert len(result) == 0
+        for col in ("current_price", "unrealized_gain_loss", "unrealized_gain_loss_pct"):
+            assert col in result.columns
