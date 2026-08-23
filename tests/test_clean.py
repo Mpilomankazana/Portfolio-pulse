@@ -17,6 +17,7 @@ import pytest
 
 from src.transform.clean import (
     calculate_daily_returns,
+    calculate_portfolio_allocation_drift,
     calculate_unrealized_gain_loss,
     clean_market_prices,
     detect_price_outliers,
@@ -250,4 +251,97 @@ class TestCalculateUnrealizedGainLoss:
         result = calculate_unrealized_gain_loss(holdings, prices)
         assert len(result) == 0
         for col in ("current_price", "unrealized_gain_loss", "unrealized_gain_loss_pct"):
+            assert col in result.columns
+
+
+class TestCalculatePortfolioAllocationDrift:
+    def test_on_target_portfolio_has_near_zero_drift(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "market_value": 6000.0},
+            {"portfolio_id": 1, "asset_class": "Fixed Income", "market_value": 4000.0},
+        ])
+        targets = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "target_pct": 60.0},
+            {"portfolio_id": 1, "asset_class": "Fixed Income", "target_pct": 40.0},
+        ])
+        result = calculate_portfolio_allocation_drift(holdings, targets)
+        for _, row in result.iterrows():
+            assert row["drift_pct"] == pytest.approx(0.0)
+
+    def test_overweight_asset_class_shows_positive_drift(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "market_value": 8000.0},
+            {"portfolio_id": 1, "asset_class": "Fixed Income", "market_value": 2000.0},
+        ])
+        targets = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "target_pct": 60.0},
+            {"portfolio_id": 1, "asset_class": "Fixed Income", "target_pct": 40.0},
+        ])
+        result = calculate_portfolio_allocation_drift(holdings, targets)
+        equities = result[
+            (result["portfolio_id"] == 1) & (result["asset_class"] == "Equities")
+        ].iloc[0]
+        assert equities["actual_pct"] == pytest.approx(80.0)
+        assert equities["drift_pct"] == pytest.approx(20.0)
+
+    def test_asset_class_held_but_not_in_target_shows_full_drift(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "market_value": 5000.0},
+            {"portfolio_id": 1, "asset_class": "Cash", "market_value": 5000.0},
+        ])
+        # Target only specifies Equities — the fund holding Cash is off-benchmark.
+        targets = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "target_pct": 100.0},
+        ])
+        result = calculate_portfolio_allocation_drift(holdings, targets)
+        cash_row = result[
+            (result["portfolio_id"] == 1) & (result["asset_class"] == "Cash")
+        ].iloc[0]
+        assert cash_row["target_pct"] == 0.0
+        assert cash_row["actual_pct"] == pytest.approx(50.0)
+        assert cash_row["drift_pct"] == pytest.approx(50.0)
+
+    def test_asset_class_in_target_but_not_held_shows_negative_drift(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "market_value": 10000.0},
+        ])
+        # Target expects some Fixed Income exposure the fund doesn't have at all.
+        targets = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "target_pct": 80.0},
+            {"portfolio_id": 1, "asset_class": "Fixed Income", "target_pct": 20.0},
+        ])
+        result = calculate_portfolio_allocation_drift(holdings, targets)
+        fi_row = result[
+            (result["portfolio_id"] == 1) & (result["asset_class"] == "Fixed Income")
+        ].iloc[0]
+        assert fi_row["actual_pct"] == 0.0
+        assert fi_row["drift_pct"] == pytest.approx(-20.0)
+
+    def test_multiple_portfolios_are_independent(self):
+        holdings = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "market_value": 10000.0},
+            {"portfolio_id": 2, "asset_class": "Equities", "market_value": 3000.0},
+            {"portfolio_id": 2, "asset_class": "Cash", "market_value": 7000.0},
+        ])
+        targets = pd.DataFrame([
+            {"portfolio_id": 1, "asset_class": "Equities", "target_pct": 100.0},
+            {"portfolio_id": 2, "asset_class": "Equities", "target_pct": 50.0},
+            {"portfolio_id": 2, "asset_class": "Cash", "target_pct": 50.0},
+        ])
+        result = calculate_portfolio_allocation_drift(holdings, targets)
+        p1_equities = result[
+            (result["portfolio_id"] == 1) & (result["asset_class"] == "Equities")
+        ].iloc[0]
+        p2_equities = result[
+            (result["portfolio_id"] == 2) & (result["asset_class"] == "Equities")
+        ].iloc[0]
+        assert p1_equities["actual_pct"] == pytest.approx(100.0)
+        assert p2_equities["actual_pct"] == pytest.approx(30.0)
+
+    def test_both_inputs_empty_returns_empty_with_expected_columns(self):
+        holdings = pd.DataFrame(columns=["portfolio_id", "asset_class", "market_value"])
+        targets = pd.DataFrame(columns=["portfolio_id", "asset_class", "target_pct"])
+        result = calculate_portfolio_allocation_drift(holdings, targets)
+        assert len(result) == 0
+        for col in ("portfolio_id", "asset_class", "actual_pct", "target_pct", "drift_pct"):
             assert col in result.columns
