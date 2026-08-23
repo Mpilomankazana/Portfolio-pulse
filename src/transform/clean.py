@@ -209,20 +209,40 @@ def calculate_portfolio_allocation_drift(
         target_allocation_df: columns portfolio_id, asset_class, target_pct.
 
     Returns: DataFrame with columns portfolio_id, asset_class, actual_pct,
-    target_pct, drift_pct (actual_pct - target_pct).
-
-    # TODO: implement:
-    #   1. Group holdings_df by (portfolio_id, asset_class) and sum
-    #      market_value, then compute each group's share of that
-    #      portfolio's total market_value -> actual_pct.
-    #   2. Merge with target_allocation_df on (portfolio_id, asset_class).
-    #      An asset_class present in holdings but absent from the target
-    #      (or vice versa) should appear with the other side's pct as 0,
-    #      not be silently dropped — a fund holding an off-benchmark asset
-    #      class is exactly the kind of drift this function exists to catch.
-    #   3. drift_pct = actual_pct - target_pct.
-    #   4. Write tests: an on-target portfolio (drift ~0), a portfolio
-    #      overweight one asset class, and an asset class missing from
-    #      one side of the merge.
+    target_pct, drift_pct (actual_pct - target_pct). An asset_class present
+    on only one side of the merge still appears, with 0 on the other side
+    — a fund holding an off-benchmark asset class (or fully missing one
+    it's supposed to hold) is exactly the drift this function exists to
+    catch, so neither side is silently dropped.
     """
-    raise NotImplementedError("TODO: implement allocation drift calculation")
+    if holdings_df.empty and target_allocation_df.empty:
+        return pd.DataFrame(
+            columns=["portfolio_id", "asset_class", "actual_pct", "target_pct", "drift_pct"]
+        )
+
+    if holdings_df.empty:
+        actual = pd.DataFrame(columns=["portfolio_id", "asset_class", "actual_pct"])
+    else:
+        class_totals = (
+            holdings_df.groupby(["portfolio_id", "asset_class"])["market_value"]
+            .sum()
+            .reset_index()
+        )
+        portfolio_totals = (
+            holdings_df.groupby("portfolio_id")["market_value"]
+            .sum()
+            .reset_index()
+            .rename(columns={"market_value": "portfolio_total"})
+        )
+        actual = class_totals.merge(portfolio_totals, on="portfolio_id")
+        actual["actual_pct"] = actual["market_value"] / actual["portfolio_total"] * 100
+        actual = actual[["portfolio_id", "asset_class", "actual_pct"]]
+
+    target = target_allocation_df[["portfolio_id", "asset_class", "target_pct"]]
+
+    merged = actual.merge(target, on=["portfolio_id", "asset_class"], how="outer")
+    merged["actual_pct"] = merged["actual_pct"].fillna(0.0)
+    merged["target_pct"] = merged["target_pct"].fillna(0.0)
+    merged["drift_pct"] = merged["actual_pct"] - merged["target_pct"]
+
+    return merged.sort_values(["portfolio_id", "asset_class"]).reset_index(drop=True)
