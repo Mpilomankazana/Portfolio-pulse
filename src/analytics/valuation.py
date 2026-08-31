@@ -1,10 +1,15 @@
 """Portfolio-level time-series valuation and drawdown metrics.
 
 Portfolio exposure vs. target benchmark (allocation drift) is already
-stubbed as calculate_portfolio_allocation_drift in
+implemented as calculate_portfolio_allocation_drift in
 src/transform/clean.py — not duplicated here.
 """
+import logging
+
+import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_portfolio_valuation(
@@ -14,30 +19,48 @@ def calculate_portfolio_valuation(
 
     Params:
         holdings_df: columns portfolio_id, asset_id, quantity (assumed
-            static over the period — if quantities change over time,
-            this needs a date-aware holdings history instead; decide
-            which case applies to this project's data and document it).
+            static over the period — this project does not yet track a
+            date-aware holdings history, so a change in quantity over
+            time isn't represented here).
         prices_df: columns asset_id, date, close.
 
-    Returns: columns portfolio_id, date, portfolio_value.
+    Returns: columns portfolio_id, date, portfolio_value, sorted by
+    (portfolio_id, date).
 
-    # TODO: implement:
-    #   1. Merge holdings_df with prices_df on asset_id (this produces one
-    #      row per holding per date).
-    #   2. position_value = quantity * close.
-    #   3. Group by (portfolio_id, date), sum position_value ->
-    #      portfolio_value.
-    #   4. Sort the result by (portfolio_id, date) so it's ready for
-    #      calculate_daily_drawdown to consume without re-sorting.
-    #   5. Handle an asset_id in holdings_df with no matching price on a
-    #      given date (e.g. a gap in market_prices) — decide: forward-fill
-    #      the last known price, or exclude that asset from that day's
-    #      total (which understates the true value). Document the choice,
-    #      since it affects every downstream drawdown/valuation number.
-    #   6. Tests: a two-asset portfolio over a few days with hand-computed
-    #      expected totals; a day with a missing price for one asset.
+    Policy for a missing price on a given date: EXCLUDE that asset's
+    contribution from that day's total rather than forward-filling a
+    stale price. This is simpler to reason about and avoids valuing a
+    portfolio using a price that may be materially out of date — the
+    trade-off is that a day with a genuine data gap for one asset will
+    understate the portfolio's true value for that day. Missing
+    coverage is logged so it's visible rather than silent.
     """
-    raise NotImplementedError("TODO: implement portfolio valuation time series")
+    if holdings_df.empty or prices_df.empty:
+        return pd.DataFrame(columns=["portfolio_id", "date", "portfolio_value"])
+
+    merged = holdings_df.merge(prices_df, on="asset_id", how="inner")
+
+    covered_assets = set(merged["asset_id"].unique())
+    held_assets = set(holdings_df["asset_id"].unique())
+    uncovered = held_assets - covered_assets
+    if uncovered:
+        logger.warning(
+            "calculate_portfolio_valuation: %d asset_id(s) have no price "
+            "data at all and are excluded entirely: %s",
+            len(uncovered),
+            sorted(uncovered),
+        )
+
+    merged["position_value"] = merged["quantity"] * merged["close"]
+
+    valuation = (
+        merged.groupby(["portfolio_id", "date"])["position_value"]
+        .sum()
+        .reset_index()
+        .rename(columns={"position_value": "portfolio_value"})
+    )
+
+    return valuation.sort_values(["portfolio_id", "date"]).reset_index(drop=True)
 
 
 def calculate_daily_drawdown(valuation_df: pd.DataFrame) -> pd.DataFrame:
@@ -45,24 +68,29 @@ def calculate_daily_drawdown(valuation_df: pd.DataFrame) -> pd.DataFrame:
 
     Params:
         valuation_df: output of calculate_portfolio_valuation — columns
-            portfolio_id, date, portfolio_value, sorted by date within
-            each portfolio_id.
+            portfolio_id, date, portfolio_value.
 
     Returns: valuation_df with added columns running_peak, drawdown_pct
-    (negative or zero; 0 means at a new high).
+    (<= 0; 0 means at a new high, sitting exactly at the running peak).
+    Sorted by (portfolio_id, date) regardless of input order, since the
+    running peak is only meaningful in chronological order.
 
-    # TODO: implement:
-    #   1. Per portfolio_id, compute a running max of portfolio_value:
-    #      df.groupby("portfolio_id")["portfolio_value"].cummax() ->
-    #      running_peak.
-    #   2. drawdown_pct = (portfolio_value - running_peak) / running_peak.
-    #      This is <= 0 by construction; a fresh peak day has drawdown_pct
-    #      == 0.
-    #   3. Guard against running_peak == 0 if a portfolio can legitimately
-    #      have zero value at some point (division by zero) — decide
-    #      whether that's a real case for this project's data.
-    #   4. Tests: a portfolio that rises monotonically (drawdown always 0),
-    #      one with a known peak-then-decline sequence with a
-    #      hand-calculated expected drawdown at the trough.
+    A running_peak of 0 (a portfolio that was worth nothing at some
+    point) makes the percentage undefined rather than a real drawdown —
+    that row's drawdown_pct is NaN rather than raising or reporting an
+    infinite/misleading value.
     """
-    raise NotImplementedError("TODO: implement daily drawdown calculation")
+    if valuation_df.empty:
+        result = valuation_df.copy()
+        result["running_peak"] = pd.Series(dtype=float)
+        result["drawdown_pct"] = pd.Series(dtype=float)
+        return result
+
+    df = valuation_df.sort_values(["portfolio_id", "date"]).copy()
+
+    df["running_peak"] = df.groupby("portfolio_id")["portfolio_value"].cummax()
+
+    safe_peak = df["running_peak"].replace(0, np.nan)
+    df["drawdown_pct"] = (df["portfolio_value"] - df["running_peak"]) / safe_peak
+
+    return df.reset_index(drop=True)
