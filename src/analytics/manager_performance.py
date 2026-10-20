@@ -1,7 +1,7 @@
 """Manager-level performance ranking across quarterly returns.
 
-Nothing here exists yet. Depends on calculate_daily_returns (already
-implemented in src/transform/clean.py) as its input building block.
+Depends on calculate_daily_returns (already implemented in
+src/transform/clean.py) as its input building block.
 """
 import pandas as pd
 
@@ -10,31 +10,44 @@ def calculate_quarterly_returns(daily_returns_df: pd.DataFrame) -> pd.DataFrame:
     """Compound daily returns into a return per manager per quarter.
 
     Params:
-        daily_returns_df: expected columns — manager_id, date, daily_return
-            (this requires joining calculate_daily_returns's per-ticker
-            output up through portfolio_holdings -> portfolios -> managers
-            to get a per-manager daily return series — decide whether that
-            aggregation is weighted by holding size or a simple mean, and
-            document the choice here, since it changes the result).
+        daily_returns_df: columns manager_id, date, daily_return (this
+            requires joining calculate_daily_returns's per-ticker output
+            up through portfolio_holdings -> portfolios -> managers to
+            get a per-manager daily return series upstream of this
+            function — that join/aggregation is not this function's job).
 
-    Returns: columns manager_id, year, quarter, quarterly_return.
+    Returns: columns manager_id, year, quarter, quarterly_return, sorted
+    by (manager_id, year, quarter).
 
-    # TODO: implement:
-    #   1. Add a `quarter` column: pd.PeriodIndex(daily_returns_df["date"],
-    #      freq="Q") or (df["date"].dt.year, df["date"].dt.quarter).
-    #   2. Compound (not sum) daily returns within each (manager_id,
-    #      quarter) group: (1 + daily_return).prod() - 1. Summing daily
-    #      returns instead of compounding is a common bug — a test should
-    #      catch it by asserting against a hand-computed compounded value.
-    #   3. Handle NaN daily_return values (e.g. a manager's first day in
-    #      the dataset) — decide whether to treat as 0% for that day
-    #      (fillna(0) before compounding) or exclude the day, and document
-    #      the choice.
-    #   4. Tests: a manager with a known, hand-calculated sequence of daily
-    #      returns compounding to a specific quarterly figure; a manager
-    #      with a leading NaN day.
+    Returns are COMPOUNDED, not summed, within each (manager_id,
+    year, quarter) group: (1 + daily_return).prod() - 1. Summing daily
+    returns instead of compounding understates genuine multi-day
+    performance and is a common bug this choice avoids.
+
+    A NaN daily_return (e.g. a manager's first day in the dataset, with
+    no prior close to compare against) is treated as a 0% day via
+    fillna(0) before compounding — it contributes a multiplicative
+    factor of 1, leaving the quarter's compounded return unaffected by
+    a day with no actual return information, rather than excluding the
+    day (which would silently shrink the observation window) or
+    propagating NaN through the whole quarter.
     """
-    raise NotImplementedError("TODO: implement quarterly return compounding")
+    if daily_returns_df.empty:
+        return pd.DataFrame(columns=["manager_id", "year", "quarter", "quarterly_return"])
+
+    df = daily_returns_df.copy()
+    df["date"] = pd.to_datetime(df["date"])
+    df["year"] = df["date"].dt.year
+    df["quarter"] = df["date"].dt.quarter
+    df["daily_return"] = df["daily_return"].fillna(0.0)
+
+    result = (
+        df.groupby(["manager_id", "year", "quarter"])["daily_return"]
+        .apply(lambda returns: (1 + returns).prod() - 1)
+        .reset_index(name="quarterly_return")
+    )
+
+    return result.sort_values(["manager_id", "year", "quarter"]).reset_index(drop=True)
 
 
 def rank_managers_by_performance(quarterly_returns_df: pd.DataFrame) -> pd.DataFrame:
