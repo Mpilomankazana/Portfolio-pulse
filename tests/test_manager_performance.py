@@ -2,7 +2,10 @@
 import pandas as pd
 import pytest
 
-from src.analytics.manager_performance import calculate_quarterly_returns
+from src.analytics.manager_performance import (
+    calculate_quarterly_returns,
+    rank_managers_by_performance,
+)
 
 
 class TestCalculateQuarterlyReturns:
@@ -71,3 +74,53 @@ class TestCalculateQuarterlyReturns:
         result = calculate_quarterly_returns(df)
         assert len(result) == 0
         assert list(result.columns) == ["manager_id", "year", "quarter", "quarterly_return"]
+
+
+class TestRankManagersByPerformance:
+    def test_clear_ranking(self):
+        df = pd.DataFrame([
+            {"manager_id": 1, "year": 2026, "quarter": 1, "quarterly_return": 0.10},
+            {"manager_id": 2, "year": 2026, "quarter": 1, "quarterly_return": 0.20},
+            {"manager_id": 3, "year": 2026, "quarter": 1, "quarterly_return": 0.05},
+        ])
+        result = rank_managers_by_performance(df)
+        best = result[result["manager_id"] == 2].iloc[0]
+        middle = result[result["manager_id"] == 1].iloc[0]
+        worst = result[result["manager_id"] == 3].iloc[0]
+        assert best["rank"] == 1
+        assert middle["rank"] == 2
+        assert worst["rank"] == 3
+
+    def test_tied_managers_share_min_rank(self):
+        df = pd.DataFrame([
+            {"manager_id": 1, "year": 2026, "quarter": 1, "quarterly_return": 0.10},
+            {"manager_id": 2, "year": 2026, "quarter": 1, "quarterly_return": 0.10},
+            {"manager_id": 3, "year": 2026, "quarter": 1, "quarterly_return": 0.05},
+        ])
+        result = rank_managers_by_performance(df)
+        tied_a = result[result["manager_id"] == 1].iloc[0]
+        tied_b = result[result["manager_id"] == 2].iloc[0]
+        third = result[result["manager_id"] == 3].iloc[0]
+        assert tied_a["rank"] == 1
+        assert tied_b["rank"] == 1
+        # method="min" means the next distinct manager gets rank 3, not 2.
+        assert third["rank"] == 3
+
+    def test_quarters_ranked_independently(self):
+        df = pd.DataFrame([
+            {"manager_id": 1, "year": 2026, "quarter": 1, "quarterly_return": 0.20},
+            {"manager_id": 2, "year": 2026, "quarter": 1, "quarterly_return": 0.10},
+            {"manager_id": 1, "year": 2026, "quarter": 2, "quarterly_return": 0.01},
+            {"manager_id": 2, "year": 2026, "quarter": 2, "quarterly_return": 0.15},
+        ])
+        result = rank_managers_by_performance(df)
+        q1_m1 = result[(result["manager_id"] == 1) & (result["quarter"] == 1)].iloc[0]
+        q2_m1 = result[(result["manager_id"] == 1) & (result["quarter"] == 2)].iloc[0]
+        assert q1_m1["rank"] == 1  # manager 1 led Q1
+        assert q2_m1["rank"] == 2  # but trailed in Q2
+
+    def test_empty_input_returns_empty_with_rank_column(self):
+        df = pd.DataFrame(columns=["manager_id", "year", "quarter", "quarterly_return"])
+        result = rank_managers_by_performance(df)
+        assert len(result) == 0
+        assert "rank" in result.columns
