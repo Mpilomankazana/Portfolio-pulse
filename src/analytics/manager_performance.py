@@ -59,14 +59,21 @@ def rank_managers_by_performance(quarterly_returns_df: pd.DataFrame) -> pd.DataF
     Returns: quarterly_returns_df with an added `rank` column (1 = best
     performer that quarter), ranked independently within each quarter.
 
-    # TODO: implement:
-    #   1. Group by quarter (year, quarter), rank quarterly_return
-    #      descending within each group: .rank(ascending=False, method="min").
-    #      Use method="min" (not the pandas default "average") so ties get
-    #      whole-number ranks appropriate for a leaderboard display, and
-    #      document that choice.
-    #   2. Tests: a quarter with a clear ranking, and a quarter with a tie
-    #      between two managers to confirm the tie-handling method behaves
-    #      as documented.
+    Ties use method="min" rather than pandas' default "average", so two
+    managers tied for best both get rank 1 (not 1.5) and the next manager
+    gets rank 3 — whole-number ranks suited to a leaderboard display,
+    where a fractional rank would be meaningless to show.
     """
-    raise NotImplementedError("TODO: implement manager ranking")
+    if quarterly_returns_df.empty:
+        result = quarterly_returns_df.copy()
+        result["rank"] = pd.Series(dtype=int)
+        return result
+
+    df = quarterly_returns_df.copy()
+    df["rank"] = (
+        df.groupby(["year", "quarter"])["quarterly_return"]
+        .rank(ascending=False, method="min")
+        .astype(int)
+    )
+
+    return df.sort_values(["year", "quarter", "rank"]).reset_index(drop=True)
