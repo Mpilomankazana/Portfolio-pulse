@@ -37,6 +37,9 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 # managers' sources publish on a different schedule.
 PIPELINE_SCHEDULE = os.getenv("PIPELINE_SCHEDULE", "0 18 * * 1-5")
 
+# Timezone the cron above is interpreted in (IANA name).
+SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Africa/Johannesburg")
+
 
 def _validate() -> None:
     """Fail fast and loud at import time rather than deep inside a DB call."""
