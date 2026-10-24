@@ -4,11 +4,9 @@ Order: extract_from_csv -> clean_market_prices -> validate_ohlcv ->
 calculate_daily_returns -> detect_price_outliers -> ticker->asset_id
 lookup -> upsert_market_prices.
 
-Note: validate_ohlcv and detect_price_outliers are not yet implemented
-in src/transform/clean.py (both still raise NotImplementedError). This
-wiring calls them anyway, per the target design — a run against real
-data will fail at that step until those two are built. That failure is
-expected at this stage, not a bug in this file.
+CSV sources come from config.CSV_SOURCES (env var CSV_SOURCES, default
+data/sample_prices.csv). Tickers must exist in the `assets` table first;
+run `python -m src.orchestration.seed` on a fresh database.
 """
 import logging
 from pathlib import Path
@@ -18,7 +16,7 @@ from sqlalchemy import text
 
 # Importing config first: it loads .env, validates DATABASE_URL, and
 # configures logging, before anything below can go wrong.
-from src.orchestration import config  # noqa: F401
+from src.orchestration import config
 from src.db import engine
 from src.extract.market_data import extract_from_csv
 from src.transform.clean import (
@@ -30,13 +28,6 @@ from src.transform.clean import (
 from src.load.loader import upsert_market_prices
 
 logger = logging.getLogger(__name__)
-
-# CSVs to ingest per run. Phase 2 note: move this to config.py (or a
-# manifest file) once there's more than a couple of sources, rather than
-# hardcoding paths here.
-CSV_SOURCES = [
-    Path("data/sample_prices.csv"),
-]
 
 
 def _load_ticker_to_asset_id() -> dict[str, int]:
@@ -86,7 +77,7 @@ def run() -> None:
 
     try:
         # 1. Extract
-        raw_df, extract_failures = _extract_all(CSV_SOURCES)
+        raw_df, extract_failures = _extract_all(config.CSV_SOURCES)
         rows_extracted = len(raw_df)
         if extract_failures:
             logger.warning("%d source(s) failed to extract: %s", len(extract_failures), extract_failures)
