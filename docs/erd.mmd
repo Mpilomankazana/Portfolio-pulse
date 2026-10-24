@@ -1,0 +1,61 @@
+erDiagram
+    managers ||--o{ portfolios : "runs"
+    portfolios ||--o{ portfolio_holdings : "holds"
+    assets ||--o{ portfolio_holdings : "held as"
+    assets ||--o{ market_prices : "priced by"
+    assets ||--o{ dividends : "pays"
+    portfolios ||--o{ portfolio_targets : "targets"
+
+    managers {
+        int manager_id PK
+        varchar firm_name
+        varchar strategy_type
+        timestamptz created_at
+    }
+
+    portfolios {
+        int portfolio_id PK
+        int manager_id FK
+        varchar benchmark "nullable"
+        numeric allocation_pct "0-100"
+        timestamptz created_at
+    }
+
+    assets {
+        int asset_id PK
+        varchar ticker UK
+        varchar asset_class "Equities, Fixed Income, Cash"
+        varchar sector "nullable"
+        timestamptz created_at
+    }
+
+    market_prices {
+        int asset_id PK, FK
+        date price_date PK
+        numeric open
+        numeric high
+        numeric low
+        numeric close
+        bigint volume
+    }
+
+    portfolio_holdings {
+        int portfolio_id PK, FK
+        int asset_id PK, FK
+        numeric weight_pct "0-100"
+        numeric quantity "nullable"
+        numeric cost_basis "nullable"
+    }
+
+    portfolio_targets {
+        int portfolio_id PK, FK
+        varchar asset_class PK "matches assets.asset_class by value, not FK"
+        numeric target_pct "0-100"
+    }
+
+    dividends {
+        int dividend_id PK
+        int asset_id FK
+        numeric dividend_amount
+        date payment_date
+    }
