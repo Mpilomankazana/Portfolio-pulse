@@ -10,6 +10,7 @@ Importing this module has two side effects, both intentional:
 """
 import logging
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -26,6 +27,24 @@ from src.db import DATABASE_URL  # noqa: E402  (import after load_dotenv on purp
 # implemented (Phase 2). Left as None here rather than raised eagerly, so
 # importing config.py doesn't crash CSV-only runs that never touch the API.
 MARKET_API_KEY = os.getenv("MARKET_API_KEY")
+
+# --- Data sources -------------------------------------------------------
+# Repo root, so relative paths below resolve the same whether the pipeline
+# is started from the repo root, from a scheduler, or inside the container.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _parse_csv_sources(raw: str | None) -> list[Path]:
+    """Comma-separated paths -> list of Paths. Relative paths are taken
+    relative to PROJECT_ROOT. Empty/unset falls back to the sample file."""
+    entries = [e.strip() for e in (raw or "").split(",") if e.strip()]
+    if not entries:
+        entries = ["data/sample_prices.csv"]
+    return [p if p.is_absolute() else PROJECT_ROOT / p for p in map(Path, entries)]
+
+
+# Override with e.g. CSV_SOURCES=data/a.csv,data/b.csv
+CSV_SOURCES = _parse_csv_sources(os.getenv("CSV_SOURCES"))
 
 # --- Logging ----------------------------------------------------------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
