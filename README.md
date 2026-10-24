@@ -47,6 +47,16 @@ pytest -m "not integration"      # run the unit suite (no DB required)
 python -m src.orchestration.run_pipeline
 ```
 
+### Scheduled runs
+
+The pipeline runs on a cron schedule via APScheduler (`src/orchestration/scheduler.py`).
+Defaults: 18:00 weekdays, `Africa/Johannesburg` time. Override with `PIPELINE_SCHEDULE` and `SCHEDULER_TIMEZONE` in `.env`.
+
+```
+python -m src.orchestration.scheduler --run-now   # run once now, then on schedule
+docker compose up -d scheduler                    # or run it as a container
+```
+
 ### Running integration tests
 
 The unit suite mocks the database (see `tests/test_loader.py`,
