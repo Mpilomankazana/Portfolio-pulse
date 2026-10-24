@@ -44,8 +44,11 @@ cp .env.example .env
 docker compose up -d postgres    # spins up Postgres and applies sql/schema.sql
 pip install -r requirements.txt
 pytest -m "not integration"      # run the unit suite (no DB required)
-python -m src.orchestration.run_pipeline
+python -m src.orchestration.seed          # first run only: managers, portfolios, assets (idempotent)
+python -m src.orchestration.run_pipeline  # loads CSV_SOURCES (default: data/sample_prices.csv)
 ```
+
+`data/sample_prices.csv` is synthetic demo data (8 tickers, 60 trading days). Regenerate it with `python scripts/generate_sample_prices.py`. Point the pipeline at your own files with `CSV_SOURCES=path/a.csv,path/b.csv` in `.env`.
 
 ### Scheduled runs
 
