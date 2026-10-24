@@ -54,5 +54,20 @@ services:
       - ./:/app
     command: ["python", "-m", "src.orchestration.run_pipeline"]
 
+  scheduler:
+    build: .
+    container_name: de27four_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-de27four}:${POSTGRES_PASSWORD:-de27four_pw}@postgres:5432/${POSTGRES_DB:-portfolio_analytics}
+      PIPELINE_SCHEDULE: ${PIPELINE_SCHEDULE:-0 18 * * 1-5}
+      SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-Africa/Johannesburg}
+    volumes:
+      - ./:/app
+    command: ["python", "-m", "src.orchestration.scheduler"]
+
 volumes:
   pgdata:
