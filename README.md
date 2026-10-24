@@ -43,9 +43,28 @@ See `sql/schema.sql` for full DDL with indexing.
 cp .env.example .env
 docker compose up -d postgres    # spins up Postgres and applies sql/schema.sql
 pip install -r requirements.txt
-pytest                           # run unit tests
+pytest -m "not integration"      # run the unit suite (no DB required)
 python -m src.orchestration.run_pipeline
 ```
+
+### Running integration tests
+
+The unit suite mocks the database (see `tests/test_loader.py`,
+`tests/test_extract.py`) and never needs Postgres running. A separate
+integration suite under `tests/integration/` runs against a real
+Postgres 16 instance instead, using a dedicated `postgres_test`
+docker-compose service so it never touches dev data:
+
+```
+docker compose up -d postgres_test
+export TEST_DATABASE_URL=postgresql://de27four_test:de27four_test_pw@localhost:5433/portfolio_analytics_test
+pytest -m integration             # just the integration suite
+pytest                            # everything, unit + integration
+```
+
+`sql/schema.sql` is applied automatically by the `pg_engine` fixture
+before any integration test runs (it's idempotent, so this is safe
+whether `postgres_test` is a fresh container or a reused one).
 
 ## Roadmap
 
