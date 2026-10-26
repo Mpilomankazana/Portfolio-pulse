@@ -1,5 +1,10 @@
 version: "3.9"
 
+# Shared by every container that runs application code, so the database URL
+# is defined once.
+x-app-env: &app-env
+  DATABASE_URL: postgresql://${POSTGRES_USER:-de27four}:${POSTGRES_PASSWORD:-de27four_pw}@postgres:5432/${POSTGRES_DB:-portfolio_analytics}
+
 services:
   postgres:
     image: postgres:16
@@ -42,27 +47,50 @@ services:
       timeout: 5s
       retries: 5
 
-  app:
+  # One-shot: loads reference data (assets, managers, portfolios, holdings).
+  # Idempotent, so it is safe for app/scheduler to wait on it every time.
+  # The schema itself is applied by Postgres on first start (sql/ is mounted
+  # into docker-entrypoint-initdb.d on the postgres service).
+  seed:
     build: .
-    container_name: de27four_app
+    image: portfolio-pulse:local
+    container_name: de27four_seed
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-de27four}:${POSTGRES_PASSWORD:-de27four_pw}@postgres:5432/${POSTGRES_DB:-portfolio_analytics}
+      <<: *app-env
+    volumes:
+      - ./:/app
+    command: ["python", "-m", "src.orchestration.seed"]
+
+  # One-shot pipeline run: docker compose run --rm app
+  app:
+    build: .
+    image: portfolio-pulse:local
+    container_name: de27four_app
+    restart: "no"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
     volumes:
       - ./:/app
     command: ["python", "-m", "src.orchestration.run_pipeline"]
 
+  # Long-running: runs the pipeline on PIPELINE_SCHEDULE.
   scheduler:
     build: .
+    image: portfolio-pulse:local
     container_name: de27four_scheduler
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-de27four}:${POSTGRES_PASSWORD:-de27four_pw}@postgres:5432/${POSTGRES_DB:-portfolio_analytics}
+      <<: *app-env
       PIPELINE_SCHEDULE: ${PIPELINE_SCHEDULE:-0 18 * * 1-5}
       SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-Africa/Johannesburg}
     volumes:
