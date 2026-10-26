@@ -365,4 +365,4 @@ Demo link to be added in Phase 3.
 
 ## Verification Code
 
-Verification code to be committed here after final submission (due 30 October 2026).
+`WTC-6ZSC6D77`
