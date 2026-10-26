@@ -1,0 +1,15 @@
+# Nothing here needs to ship in the image. .env in particular must never be
+# baked into an image; docker-compose passes configuration at runtime.
+.git
+.gitignore
+.env
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+tests
+docs
+*.egg-info
+.DS_Store
+.idea
