@@ -18,3 +18,29 @@ def test_comma_separated_relative_paths_resolve_against_project_root():
 def test_absolute_paths_are_kept_as_is():
     abs_path = Path("/srv/feeds/prices.csv")
     assert config._parse_csv_sources(str(abs_path)) == [abs_path]
+
+
+import pytest
+
+
+def test_parse_tickers_uppercases_strips_and_dedupes_in_order():
+    assert config._parse_tickers(" aapl, MSFT ,,aapl,jpm ") == ["AAPL", "MSFT", "JPM"]
+    assert config._parse_tickers(None) == []
+    assert config._parse_tickers("") == []
+
+
+def test_csv_source_needs_no_api_settings():
+    config.check_data_source("csv", [], None)  # must not raise
+
+
+def test_api_source_requires_tickers_and_key():
+    with pytest.raises(RuntimeError, match="API_TICKERS"):
+        config.check_data_source("api", [], "key")
+    with pytest.raises(RuntimeError, match="MARKET_API_KEY"):
+        config.check_data_source("api", ["AAPL"], None)
+    config.check_data_source("api", ["AAPL"], "key")  # fully configured: fine
+
+
+def test_unknown_data_source_is_rejected():
+    with pytest.raises(RuntimeError, match="DATA_SOURCE"):
+        config.check_data_source("kafka", [], None)
