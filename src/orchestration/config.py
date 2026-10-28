@@ -46,6 +46,36 @@ def _parse_csv_sources(raw: str | None) -> list[Path]:
 # Override with e.g. CSV_SOURCES=data/a.csv,data/b.csv
 CSV_SOURCES = _parse_csv_sources(os.getenv("CSV_SOURCES"))
 
+# Where prices come from: "csv" (CSV_SOURCES above) or "api" (Alpha Vantage,
+# needs MARKET_API_KEY and API_TICKERS). Default stays csv so a fresh clone
+# and the Docker demo work with no key.
+DATA_SOURCE = os.getenv("DATA_SOURCE", "csv").strip().lower()
+
+
+def _parse_tickers(raw: str | None) -> list[str]:
+    """Comma-separated tickers -> upper-cased list, blanks dropped, order kept, dupes removed."""
+    seen: list[str] = []
+    for t in (raw or "").split(","):
+        t = t.strip().upper()
+        if t and t not in seen:
+            seen.append(t)
+    return seen
+
+
+API_TICKERS = _parse_tickers(os.getenv("API_TICKERS"))
+# Days of history requested per run, ending today (UTC).
+API_LOOKBACK_DAYS = int(os.getenv("API_LOOKBACK_DAYS", "30"))
+# Pause between per-ticker API calls. Alpha Vantage's free tier allows about
+# 5 requests/minute, so 12s keeps a multi-ticker run under it.
+API_PAUSE_SECONDS = float(os.getenv("API_PAUSE_SECONDS", "12"))
+
+# --- Data lake ----------------------------------------------------------
+# File-based landing zone next to the database: raw Parquet per run,
+# curated Parquet per ticker, and a JSON manifest per run. Best-effort:
+# a lake write failure is logged but never fails the database load.
+LAKE_ENABLED = os.getenv("LAKE_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+LAKE_DIR = Path(os.getenv("LAKE_DIR") or PROJECT_ROOT / "lake")
+
 # --- Logging ----------------------------------------------------------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
@@ -60,6 +90,17 @@ PIPELINE_SCHEDULE = os.getenv("PIPELINE_SCHEDULE", "0 18 * * 1-5")
 SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Africa/Johannesburg")
 
 
+def check_data_source(source: str, tickers: list[str], api_key: str | None) -> None:
+    """Raise RuntimeError if the data-source settings can't work together."""
+    if source not in ("csv", "api"):
+        raise RuntimeError(f"DATA_SOURCE must be 'csv' or 'api', got {source!r}")
+    if source == "api":
+        if not tickers:
+            raise RuntimeError("DATA_SOURCE=api needs API_TICKERS (comma-separated, e.g. AAPL,MSFT)")
+        if not api_key:
+            raise RuntimeError("DATA_SOURCE=api needs MARKET_API_KEY (an Alpha Vantage key)")
+
+
 def _validate() -> None:
     """Fail fast and loud at import time rather than deep inside a DB call."""
     if not DATABASE_URL:
@@ -67,6 +108,7 @@ def _validate() -> None:
             "DATABASE_URL is not set and has no default. "
             "Set it in your .env file or environment before running the pipeline."
         )
+    check_data_source(DATA_SOURCE, API_TICKERS, MARKET_API_KEY)
 
 
 _validate()
