@@ -88,7 +88,8 @@ JOIN latest     l ON l.asset_id     = h.asset_id
 ORDER BY unrealized_gl DESC
 LIMIT 5;
 
--- 4. Sector exposure at latest prices, with dividends received per sector.
+-- 4. Sector exposure at latest prices, with dividends received per sector
+-- (dividends use today's quantity; purchase dates are not modelled).
 WITH latest AS (
     SELECT DISTINCT ON (asset_id) asset_id, close
     FROM market_prices
@@ -117,3 +118,4 @@ SELECT e.sector,
 FROM exposure e
 LEFT JOIN divs d USING (sector)
 ORDER BY e.market_value DESC;
+
