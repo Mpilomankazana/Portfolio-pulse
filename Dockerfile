@@ -12,8 +12,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Run as an unprivileged user.
-RUN useradd --create-home --uid 10001 appuser
+RUN useradd --create-home --uid 10001 appuser \
+ && mkdir /lake && chown appuser:appuser /lake
 COPY --chown=appuser:appuser . .
 USER appuser
+
+EXPOSE 8000
 
 CMD ["python", "-m", "src.orchestration.run_pipeline"]
