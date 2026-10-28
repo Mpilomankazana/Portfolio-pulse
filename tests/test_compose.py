@@ -14,7 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
 SERVICES = COMPOSE["services"]
-APP_SERVICES = ["seed", "app", "scheduler"]
+APP_SERVICES = ["seed", "app", "scheduler", "api"]
 
 
 @pytest.mark.parametrize("name", APP_SERVICES)
@@ -24,7 +24,7 @@ def test_command_targets_an_importable_module(name):
     assert importlib.util.find_spec(command[2]) is not None, command[2]
 
 
-@pytest.mark.parametrize("name", ["app", "scheduler"])
+@pytest.mark.parametrize("name", ["app", "scheduler", "api"])
 def test_runtime_services_wait_for_seed_to_finish(name):
     assert SERVICES[name]["depends_on"]["seed"]["condition"] == "service_completed_successfully"
 
@@ -68,3 +68,46 @@ def test_runtime_requirements_exclude_dev_tools():
     assert "pytest" not in runtime and "pyyaml" not in runtime
     dev = (ROOT / "requirements-dev.txt").read_text().lower()
     assert "-r requirements.txt" in dev and "pytest" in dev
+
+
+@pytest.mark.parametrize("name", ["postgres", "postgres_test"])
+def test_initdb_mounts_only_the_schema_file(name):
+    """initdb runs every .sql in its directory alphabetically and aborts on the
+    first error. Mounting the whole sql/ folder would run analytics_examples.sql
+    before schema.sql and fail on a fresh volume."""
+    mounts = [v for v in SERVICES[name]["volumes"] if "docker-entrypoint-initdb.d" in v]
+    assert len(mounts) == 1
+    source = mounts[0].split(":")[0]
+    assert source == "./sql/schema.sql", f"mount only the schema file, not {source}"
+
+
+def test_api_service_exposes_8000_and_has_a_healthcheck():
+    api = SERVICES["api"]
+    assert "8000:8000" in api["ports"]
+    assert api["restart"] == "unless-stopped"
+    assert "/health" in " ".join(api["healthcheck"]["test"])
+    # the ASGI target in the command must really exist
+    from src.api.main import app
+    assert api["command"][3] == "src.api.main:app" and app is not None
+
+
+@pytest.mark.parametrize("name", ["app", "scheduler"])
+def test_pipeline_services_write_the_lake_to_a_named_volume(name):
+    svc = SERVICES[name]
+    assert "lake:/lake" in svc["volumes"]
+    assert svc["environment"]["LAKE_DIR"] == "/lake"
+    assert "lake" in COMPOSE["volumes"]
+
+
+def test_dockerfile_creates_a_lake_dir_the_non_root_user_can_write():
+    text = (ROOT / "Dockerfile").read_text()
+    assert "mkdir /lake" in text and "chown appuser:appuser /lake" in text
+    # ownership must be set BEFORE dropping privileges
+    assert text.index("chown appuser:appuser /lake") < text.index("USER appuser")
+
+
+def test_web_and_parquet_dependencies_are_runtime_not_dev():
+    runtime = (ROOT / "requirements.txt").read_text().lower()
+    assert all(pkg in runtime for pkg in ("fastapi", "uvicorn", "pyarrow"))
+    dev = (ROOT / "requirements-dev.txt").read_text().lower()
+    assert "httpx" in dev and "httpx" not in runtime
