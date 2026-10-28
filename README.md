@@ -5,18 +5,23 @@ An automated multi-manager ETL and portfolio analytics engine: multi-manager fun
 ## Architecture
 
 ```
-[ Financial Market APIs / CSVs ]
+[ Financial Market APIs / CSVs ]        DATA_SOURCE=csv (default) | api
               |
               v
-[ Ingestion Engine (Python/Pandas) ]
+[ Ingestion Engine (Python/Pandas) ] ---> [ Raw lake: Parquet, one folder per run ]
               |
               v
-[ Data Cleaning & Transformation (ETL) ]
+[ Data Cleaning & Transformation (ETL) ] ---> [ Curated lake: Parquet per ticker + JSON run manifests ]
               |
               v
-[ PostgreSQL Database ] <-- [ Automated Pipeline Orchestrator ]
+[ PostgreSQL Database ] <-- [ Automated Pipeline Orchestrator (APScheduler) ]
    (Portfolio Schemas & Analytics)
+              |
+              v
+[ Read-only REST API (FastAPI) ]
 ```
+
+Design rationale (normalisation, ACID, CAP, lake vs warehouse, governance, and what is deliberately not built) is in [`docs/design_notes.md`](docs/design_notes.md).
 
 ## Schema
 
@@ -107,9 +112,12 @@ The same diagram lives in `docs/erd.mmd` for tools that take a standalone Mermai
 
 | Component | Technology |
 |---|---|
-| Language | Python 3.11 |
+| Language | Python 3.11+ (Docker image uses 3.11) |
 | Database | PostgreSQL 16 |
-| ETL Libraries | Pandas, SQLAlchemy, PyTest |
+| ETL Libraries | Pandas, SQLAlchemy, PyArrow, PyTest |
+| API | FastAPI, Uvicorn (read-only REST) |
+| Scheduling | APScheduler |
+| Storage formats | PostgreSQL, Parquet, JSON, CSV |
 | Containerization | Docker / Docker Compose |
 
 ## Setup
@@ -124,6 +132,51 @@ python -m src.orchestration.run_pipeline  # loads CSV_SOURCES (default: data/sam
 ```
 
 `data/sample_prices.csv` is synthetic demo data (8 tickers, 60 trading days). Regenerate it with `python scripts/generate_sample_prices.py`. Point the pipeline at your own files with `CSV_SOURCES=path/a.csv,path/b.csv` in `.env`.
+
+### Data sources
+
+| Setting | Meaning |
+|---|---|
+| `DATA_SOURCE=csv` (default) | Read `CSV_SOURCES` (default `data/sample_prices.csv`). Needs no key. |
+| `DATA_SOURCE=api` | Call Alpha Vantage once per ticker in `API_TICKERS` for the last `API_LOOKBACK_DAYS` days. Needs `MARKET_API_KEY`. |
+| `API_PAUSE_SECONDS` | Pause between tickers (default 12s) to stay under the free tier's per-minute limit. |
+
+Both extractors return the same columns, so everything after extraction is identical. If one ticker fails, or the API answers with no data (its usual response to a rate limit), that ticker is recorded as a failure in the log and manifest and the rest still load. The free tier also has a small daily request cap, so check Alpha Vantage's current limits before pointing the scheduler at it. The demo and Docker flow use CSV.
+
+### Data lake
+
+Each run writes Parquet and JSON files next to the database load (`lake/` locally, the `lake` volume at `/lake` in Docker; set `LAKE_DIR` to change it, `LAKE_ENABLED=false` to turn it off):
+
+```
+lake/
+  raw/market_prices/run_id=20261026T180000Z/data.parquet   # extractor output, untouched, one folder per run
+  curated/market_prices/ticker=AAPL/data.parquet           # cleaned, + daily_return, is_outlier; merged by date
+  manifests/20261026T180000Z.json                          # counts, source, failures, paths, status
+```
+
+Reruns are idempotent in both stores: the curated file for a ticker is merged by date (newest wins) and the database upsert is keyed on `(asset_id, price_date)`. Lake writes are best-effort; a failure is logged and recorded in the manifest but never blocks the database load.
+
+### REST API
+
+A small read-only FastAPI service over the database. Start it with `docker compose up -d api` or `uvicorn src.api.main:app`; interactive docs are at `http://localhost:8000/docs`.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /health` | API and database status (503 if the database is down) |
+| `GET /managers` | Managers with their portfolio and benchmark |
+| `GET /managers/rankings?quarter=2026-Q3` | Managers ranked by portfolio return per quarter (`quarter` optional) |
+| `GET /portfolios/{id}/holdings` | Holdings at latest prices with unrealized gain/loss |
+| `GET /portfolios/{id}/allocation` | Actual vs target allocation by asset class, with drift |
+| `GET /portfolios/{id}/risk?confidence=0.95&method=historical` | One-day VaR and CVaR (`method`: `historical` or `parametric`) |
+| `GET /prices/{ticker}?start=&end=&limit=` | Daily OHLCV, oldest first |
+
+```
+$ curl "http://localhost:8000/portfolios/1/risk?confidence=0.95"   # output abridged, values rounded
+{"portfolio_id":1,"horizon":"1 day","confidence":0.95,"method":"historical",
+ "var":0.0089,"cvar":0.0104,"n_returns":59,"first_date":"2026-08-03","last_date":"2026-10-23"}
+```
+
+VaR and CVaR are positive loss fractions: 0.0089 means that on 95% of days the loss was no worse than 0.89%. CVaR is always historical, so with a short history and parametric VaR it can come out lower than the VaR. Unknown ids and tickers return 404, malformed parameters 422, and too little price history 409. There are no write endpoints, and there is no authentication yet (see `docs/design_notes.md`).
 
 ### Scheduled runs
 
@@ -311,7 +364,7 @@ Result:
 
 ### 4. Sector exposure and dividends
 
-Market value by sector across all portfolios, plus dividends received (`dividend_amount * quantity` held). `Unclassified` is every asset with a NULL sector, i.e. the Fixed Income and Cash positions.
+Market value by sector across all portfolios, plus dividends received (`dividend_amount * quantity` held). It uses today's quantity and ignores when shares were bought, so it is a demo figure, not an accounting one. `Unclassified` is every asset with a NULL sector, i.e. the Fixed Income and Cash positions.
 
 ```sql
 WITH latest AS (
@@ -359,9 +412,6 @@ Result:
 (7 rows)
 ```
 
-## Demo
-
-Demo link to be added in Phase 3.
 
 ## Verification Code
 
