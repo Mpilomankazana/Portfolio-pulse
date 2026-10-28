@@ -4,6 +4,13 @@ version: "3.9"
 # is defined once.
 x-app-env: &app-env
   DATABASE_URL: postgresql://${POSTGRES_USER:-de27four}:${POSTGRES_PASSWORD:-de27four_pw}@postgres:5432/${POSTGRES_DB:-portfolio_analytics}
+  DATA_SOURCE: ${DATA_SOURCE:-csv}
+  API_TICKERS: ${API_TICKERS:-}
+  API_LOOKBACK_DAYS: ${API_LOOKBACK_DAYS:-30}
+  API_PAUSE_SECONDS: ${API_PAUSE_SECONDS:-12}
+  MARKET_API_KEY: ${MARKET_API_KEY:-}
+  # Named volume owned by the non-root user (see Dockerfile); Parquet + manifests land here.
+  LAKE_DIR: /lake
 
 services:
   postgres:
@@ -18,7 +25,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./sql:/docker-entrypoint-initdb.d
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-de27four}"]
       interval: 5s
@@ -40,7 +47,7 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - ./sql:/docker-entrypoint-initdb.d
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U de27four_test"]
       interval: 5s
@@ -49,8 +56,10 @@ services:
 
   # One-shot: loads reference data (assets, managers, portfolios, holdings).
   # Idempotent, so it is safe for app/scheduler to wait on it every time.
-  # The schema itself is applied by Postgres on first start (sql/ is mounted
-  # into docker-entrypoint-initdb.d on the postgres service).
+  # The schema itself is applied by Postgres on first start: ONLY sql/schema.sql
+  # is mounted into docker-entrypoint-initdb.d. Never mount the whole sql/
+  # folder; initdb runs every .sql file in it alphabetically and stops on the
+  # first error (analytics_examples.sql would run before the tables exist).
   seed:
     build: .
     image: portfolio-pulse:local
@@ -78,6 +87,7 @@ services:
       <<: *app-env
     volumes:
       - ./:/app
+      - lake:/lake
     command: ["python", "-m", "src.orchestration.run_pipeline"]
 
   # Long-running: runs the pipeline on PIPELINE_SCHEDULE.
@@ -95,7 +105,31 @@ services:
       SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-Africa/Johannesburg}
     volumes:
       - ./:/app
+      - lake:/lake
     command: ["python", "-m", "src.orchestration.scheduler"]
+
+  # Read-only REST API: http://localhost:8000/docs
+  api:
+    build: .
+    image: portfolio-pulse:local
+    container_name: de27four_api
+    restart: unless-stopped
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+    command: ["python", "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   pgdata:
+  lake:
