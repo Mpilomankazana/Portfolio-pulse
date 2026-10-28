@@ -30,3 +30,15 @@ def upsert_market_prices(records: list[dict]) -> None:
 
     with engine.begin() as conn:
         conn.execute(stmt, records)
+
+
+def get_ticker_to_asset_id() -> dict[str, int]:
+    """Map ticker -> asset_id from the assets table.
+
+    A ticker with no row here is a data-setup problem (the asset must exist
+    before prices for it can be loaded); the caller decides whether to skip
+    or fail on rows that don't map.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT asset_id, ticker FROM assets")).fetchall()
+    return {ticker: asset_id for asset_id, ticker in rows}
