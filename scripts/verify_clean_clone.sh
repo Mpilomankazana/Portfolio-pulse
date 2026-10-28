@@ -5,7 +5,8 @@
 # WARNING: runs `docker compose down -v`, which DELETES the dev database volume.
 #
 # Steps: fresh stack -> seed -> pipeline -> rerun (idempotent) -> analytics SQL
-#        -> scheduler container stays up and registers its job.
+#        -> scheduler container stays up and registers its job
+#        -> REST API healthy and serving data -> lake files written -> non-root.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -14,6 +15,7 @@ step() { printf '\n==> %s\n' "$*"; }
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 command -v docker >/dev/null || fail "docker not found"
+command -v curl >/dev/null || fail "curl not found"
 docker compose version >/dev/null 2>&1 || fail "docker compose plugin not found"
 
 [ -f .env ] || { step "No .env found, copying .env.example"; cp .env.example .env; }
@@ -37,19 +39,19 @@ tables=$(psql_q "SELECT count(*) FROM information_schema.tables WHERE table_sche
 echo "tables: $tables"
 
 step "Seed (one-shot service)"
-docker compose run --rm seed
+docker compose run --rm -T seed
 assets=$(psql_q "SELECT count(*) FROM assets")
 [ "$assets" -ge 1 ] || fail "no assets after seed"
 echo "assets: $assets"
 
 step "Pipeline run (one-shot service)"
-docker compose run --rm app
+docker compose run --rm -T app
 rows=$(psql_q "SELECT count(*) FROM market_prices")
 [ "$rows" -ge 1 ] || fail "no market_prices rows after pipeline run"
 echo "market_prices rows: $rows"
 
 step "Rerun pipeline: row count must not change (idempotent upsert)"
-docker compose run --rm app
+docker compose run --rm -T app
 rows2=$(psql_q "SELECT count(*) FROM market_prices")
 [ "$rows" = "$rows2" ] || fail "row count changed on rerun: $rows -> $rows2"
 
@@ -64,9 +66,22 @@ state=$(docker inspect -f '{{.State.Status}}' de27four_scheduler)
 [ "$state" = "running" ] || { docker compose logs scheduler; fail "scheduler state is '$state'"; }
 docker compose logs scheduler | grep -q "Scheduler started" || { docker compose logs scheduler; fail "scheduler did not report starting"; }
 
+step "REST API starts healthy and serves real data"
+docker compose up -d --wait api
+curl -fsS http://localhost:8000/health | grep -q '"status":"ok"' || fail "API /health not ok"
+curl -fsS http://localhost:8000/managers/rankings | grep -q '"firm_name"' || fail "API returned no rankings"
+curl -fsS "http://localhost:8000/portfolios/1/risk" | grep -q '"var"' || fail "API risk endpoint failed"
+
+step "Data lake has raw, curated and manifest files (and is writable by the non-root user)"
+docker compose run --rm -T --no-deps app sh -c \
+  'ls /lake/raw/market_prices /lake/curated/market_prices /lake/manifests >/dev/null' \
+  || fail "lake directories missing: check the lake volume and LAKE_DIR"
+manifests=$(docker compose run --rm -T --no-deps app sh -c 'ls /lake/manifests | wc -l' | tr -d '[:space:]')
+[ "$manifests" -ge 2 ] || fail "expected one manifest per pipeline run (>=2), found $manifests"
+
 step "Container runs as non-root"
 user=$(docker compose exec -T scheduler id -u)
 [ "$user" != "0" ] || fail "scheduler is running as root"
 
-printf '\nPASS: clean-clone verification succeeded (tables=%s assets=%s prices=%s)\n' "$tables" "$assets" "$rows"
+printf '\nPASS: clean-clone verification succeeded (tables=%s assets=%s prices=%s manifests=%s)\n' "$tables" "$assets" "$rows" "$manifests"
 echo "Stack left running. Stop it with: docker compose down"
