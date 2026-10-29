@@ -65,7 +65,7 @@ def test_csv_source_loads_rows_and_writes_lake_and_manifest(env):
     assert (env.lake / "curated" / "market_prices" / "ticker=AAPL" / "data.parquet").exists()
     manifests = list((env.lake / "manifests").glob("*.json"))
     assert len(manifests) == 1
-    on_disk = json.loads(manifests[0].read_text())
+    on_disk = json.loads(manifests[0].read_text(encoding="utf-8"))
     assert on_disk["status"] == "success" and on_disk["rows_upserted"] == 3
 
 
@@ -108,7 +108,7 @@ def test_empty_api_response_counts_as_a_failure_not_silent_success(env, monkeypa
     assert "no rows" in summary["source_failures"][0]
     assert env.upserts == []
     # A no_data run still leaves a manifest explaining why.
-    assert json.loads(next((env.lake / "manifests").glob("*.json")).read_text())["status"] == "no_data"
+    assert json.loads(next((env.lake / "manifests").glob("*.json")).read_text(encoding="utf-8"))["status"] == "no_data"
 
 
 def test_pauses_between_api_tickers_but_not_after_the_last(env, monkeypatch):
@@ -158,6 +158,28 @@ def test_loader_failure_propagates_and_manifest_records_failed(env, monkeypatch)
     with pytest.raises(RuntimeError, match="connection refused"):
         rp.run()
 
-    manifest = json.loads(next((env.lake / "manifests").glob("*.json")).read_text())
+    manifest = json.loads(next((env.lake / "manifests").glob("*.json")).read_text(encoding="utf-8"))
     assert manifest["status"] == "failed"
     assert manifest["rows_upserted"] == 0
+
+
+class TestCommandLineExitCode:
+    def test_no_data_exits_1(self, monkeypatch, caplog):
+        monkeypatch.setattr(rp, "run", lambda: {"run_id": "r", "source": "api", "status": "no_data",
+                                                "source_failures": ["AAPL: no rows"], "lake_errors": []})
+        with caplog.at_level("ERROR"):
+            assert rp.main() == 1
+        assert "loaded no data" in caplog.text
+
+    @pytest.mark.parametrize("status", ["success", "partial"])
+    def test_success_and_partial_exit_0(self, monkeypatch, status):
+        monkeypatch.setattr(rp, "run", lambda: {"run_id": "r", "source": "csv", "status": status,
+                                                "source_failures": [], "lake_errors": []})
+        assert rp.main() == 0
+
+    def test_a_crash_still_propagates(self, monkeypatch):
+        def boom():
+            raise RuntimeError("db down")
+        monkeypatch.setattr(rp, "run", boom)
+        with pytest.raises(RuntimeError, match="db down"):
+            rp.main()

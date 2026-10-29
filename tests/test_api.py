@@ -138,3 +138,46 @@ def test_openapi_documents_every_route():
 def test_api_is_read_only():
     methods = {m for route in main.app.routes if hasattr(route, "methods") for m in route.methods}
     assert methods <= {"GET", "HEAD", "OPTIONS"}
+
+
+class TestApiKeyAuth:
+    """Optional auth: open when API_KEY is unset, X-API-Key required when it is set."""
+
+    @pytest.fixture
+    def stubbed(self, client, monkeypatch):
+        monkeypatch.setattr(main.repo, "list_managers", lambda conn: [])
+        monkeypatch.setattr(main.repo, "ping", lambda conn: True)
+        return client
+
+    def test_open_when_no_key_is_configured(self, stubbed, monkeypatch):
+        monkeypatch.delenv("API_KEY", raising=False)
+        assert stubbed.get("/managers").status_code == 200
+
+    def test_blank_key_counts_as_unset(self, stubbed, monkeypatch):
+        monkeypatch.setenv("API_KEY", "")
+        assert stubbed.get("/managers").status_code == 200
+
+    def test_missing_header_is_401_when_a_key_is_configured(self, stubbed, monkeypatch):
+        monkeypatch.setenv("API_KEY", "s3cret")
+        r = stubbed.get("/managers")
+        assert r.status_code == 401 and r.headers["www-authenticate"] == "ApiKey"
+
+    def test_wrong_key_is_401(self, stubbed, monkeypatch):
+        monkeypatch.setenv("API_KEY", "s3cret")
+        assert stubbed.get("/managers", headers={"X-API-Key": "nope"}).status_code == 401
+
+    def test_correct_key_is_accepted(self, stubbed, monkeypatch):
+        monkeypatch.setenv("API_KEY", "s3cret")
+        assert stubbed.get("/managers", headers={"X-API-Key": "s3cret"}).status_code == 200
+
+    def test_health_stays_open_for_container_health_checks(self, stubbed, monkeypatch):
+        monkeypatch.setenv("API_KEY", "s3cret")
+        assert stubbed.get("/health").status_code == 200
+
+    @pytest.mark.parametrize("path", [
+        "/managers", "/managers/rankings", "/portfolios/1/holdings", "/portfolios/1/allocation",
+        "/portfolios/1/risk", "/prices/AAPL",
+    ])
+    def test_every_data_route_is_protected(self, stubbed, monkeypatch, path):
+        monkeypatch.setenv("API_KEY", "s3cret")
+        assert stubbed.get(path).status_code == 401

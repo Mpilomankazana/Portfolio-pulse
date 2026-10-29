@@ -105,9 +105,9 @@ are pure DataFrame functions, so they would be reused unchanged.
 
 | Pillar | Implemented | Not implemented |
 |---|---|---|
-| **Quality** | Row-level rules in `src/transform/clean.py`; database constraints; failures counted and reported per run (see table below) | Freshness alerts (nothing warns if a run is missed beyond the scheduler's own log line) |
+| **Quality** | Row-level rules in `src/transform/clean.py`; database constraints; failures counted and reported per run (see table below) | Freshness alerts (nothing warns if the scheduler itself is down, and failed runs are only logged, not sent anywhere) |
 | **Stewardship** | Single writer: only the pipeline writes prices, and the API has no write routes (a test enforces this) | Named data owners and a change process for rules |
-| **Security** | `.env` is git-ignored and excluded from the Docker image; containers run as a non-root user; all SQL is parameterised; the API is read-only | API authentication, TLS, per-user access control, encryption at rest |
+| **Security** | `.env` is git-ignored and excluded from the Docker image; containers run as a non-root user; all SQL is parameterised; the API is read-only, published on localhost only, and can require an `X-API-Key` header (set `API_KEY`; `/health` stays open for health checks) | TLS, per-user access control, key rotation, encryption at rest. With `API_KEY` unset the API is open, which is the local demo default |
 | **Management** | Lineage and replay: each run has a `run_id`, an immutable raw copy and a manifest; schema is versioned in git | Retention and archival policy, data catalogue |
 
 ### Quality dimensions and the checks behind them
@@ -119,4 +119,4 @@ are pure DataFrame functions, so they would be reused unchanged.
 | Uniqueness | Primary keys on `(asset_id, price_date)`; idempotent upserts; the curated lake merges by date |
 | Accuracy | `detect_price_outliers` flags (never drops) returns more than 3 standard deviations from a rolling 20-day window, because a real large move is information |
 | Consistency | Foreign keys; the same cleaning path for CSV and API sources, since both extractors return identical columns |
-| Timeliness | Scheduled daily run; run start and finish timestamps in each manifest. No automatic staleness alert |
+| Timeliness | Scheduled daily run; run start and finish timestamps in each manifest. A run that loads nothing (for example the API answering with a quota message) is logged by the scheduler as FAILED and makes `python -m src.orchestration.run_pipeline` exit 1; a partial run logs a warning. No external alert is sent |

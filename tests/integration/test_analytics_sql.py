@@ -24,7 +24,7 @@ EXPECTED_COLUMNS = {
 
 
 def _load_queries() -> dict[int, str]:
-    raw = SQL_PATH.read_text()
+    raw = SQL_PATH.read_text(encoding="utf-8")
     parts = re.split(r"(?m)^-- (\d+)\. ", raw)
     # parts = [preamble, "1", body1, "2", body2, ...]
     return {int(parts[i]): "-- " + parts[i] + ". " + parts[i + 1].strip().rstrip(";")

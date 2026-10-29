@@ -4,14 +4,21 @@ Run locally:
     uvicorn src.api.main:app --reload
 Interactive docs (Swagger UI): http://localhost:8000/docs
 
+Authentication is optional: if the API_KEY environment variable is set, every
+route except /health requires a matching X-API-Key header; if it is unset the
+API is open (the local demo default). /health stays open for container health checks.
+
 Routes only validate input, call the repository, and shape the response.
 SQL lives in src/api/repository.py; risk maths lives in src/analytics/risk.py.
 There are no write endpoints: the pipeline is the only writer.
 """
+import os
+import secrets
 from datetime import date
 from typing import Iterator, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Security
+from fastapi.security import APIKeyHeader
 from sqlalchemy.engine import Connection
 
 from src.analytics.risk import calculate_cvar, calculate_var
@@ -32,6 +39,20 @@ app = FastAPI(
     version="1.0.0",
     description="Read-only access to manager performance, portfolio valuation, allocation drift and risk.",
 )
+
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(supplied: str | None = Security(_api_key_header)) -> None:
+    """No-op when API_KEY is unset. Otherwise the header must match (constant-time compare)."""
+    expected = os.getenv("API_KEY")
+    if not expected:
+        return
+    if not supplied or not secrets.compare_digest(supplied.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="missing or invalid API key", headers={"WWW-Authenticate": "ApiKey"})
+
+
+PROTECTED = [Depends(require_api_key)]
 
 MIN_VALUE_POINTS = 3  # 3 daily values -> 2 returns, the least that gives a meaningful quantile
 
@@ -56,12 +77,12 @@ def health(conn: Connection = Depends(get_conn)) -> Health:
     return Health(status="ok", database="up")
 
 
-@app.get("/managers", response_model=list[ManagerOut], tags=["managers"])
+@app.get("/managers", dependencies=PROTECTED, response_model=list[ManagerOut], tags=["managers"])
 def managers(conn: Connection = Depends(get_conn)):
     return repo.list_managers(conn)
 
 
-@app.get("/managers/rankings", response_model=list[RankingOut], tags=["managers"])
+@app.get("/managers/rankings", dependencies=PROTECTED, response_model=list[RankingOut], tags=["managers"])
 def rankings(
     quarter: str | None = Query(None, pattern=r"^\d{4}-Q[1-4]$", examples=["2026-Q3"]),
     conn: Connection = Depends(get_conn),
@@ -70,19 +91,19 @@ def rankings(
     return repo.manager_rankings(conn, quarter)
 
 
-@app.get("/portfolios/{portfolio_id}/holdings", response_model=list[HoldingOut], tags=["portfolios"])
+@app.get("/portfolios/{portfolio_id}/holdings", dependencies=PROTECTED, response_model=list[HoldingOut], tags=["portfolios"])
 def holdings(portfolio_id: int, conn: Connection = Depends(get_conn)):
     _require_portfolio(conn, portfolio_id)
     return repo.portfolio_holdings(conn, portfolio_id)
 
 
-@app.get("/portfolios/{portfolio_id}/allocation", response_model=list[AllocationOut], tags=["portfolios"])
+@app.get("/portfolios/{portfolio_id}/allocation", dependencies=PROTECTED, response_model=list[AllocationOut], tags=["portfolios"])
 def allocation(portfolio_id: int, conn: Connection = Depends(get_conn)):
     _require_portfolio(conn, portfolio_id)
     return repo.portfolio_allocation(conn, portfolio_id)
 
 
-@app.get("/portfolios/{portfolio_id}/risk", response_model=RiskOut, tags=["portfolios"])
+@app.get("/portfolios/{portfolio_id}/risk", dependencies=PROTECTED, response_model=RiskOut, tags=["portfolios"])
 def risk(
     portfolio_id: int,
     confidence: float = Query(0.95, gt=0, lt=1),
@@ -115,7 +136,7 @@ def risk(
     )
 
 
-@app.get("/prices/{ticker}", response_model=list[PriceOut], tags=["prices"])
+@app.get("/prices/{ticker}", dependencies=PROTECTED, response_model=list[PriceOut], tags=["prices"])
 def prices(
     ticker: str,
     start: date | None = None,

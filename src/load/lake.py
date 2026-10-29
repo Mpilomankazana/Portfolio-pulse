@@ -84,5 +84,5 @@ def write_manifest(manifest: dict, root: Path, run_id: str) -> Path:
     """Write the run summary as pretty JSON. Non-JSON types are stringified."""
     path = Path(root) / "manifests" / f"{run_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n")
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     return path

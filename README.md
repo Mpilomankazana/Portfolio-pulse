@@ -122,6 +122,8 @@ The same diagram lives in `docs/erd.mmd` for tools that take a standalone Mermai
 
 ## Setup
 
+The full step-by-step guide (Windows PowerShell and macOS/Linux, Docker and non-Docker, live data, tests, troubleshooting) is in [SETUP.md](SETUP.md). The short version is below.
+
 ```
 cp .env.example .env
 docker compose up -d postgres    # spins up Postgres and applies sql/schema.sql
@@ -143,6 +145,8 @@ python -m src.orchestration.run_pipeline  # loads CSV_SOURCES (default: data/sam
 
 Both extractors return the same columns, so everything after extraction is identical. If one ticker fails, or the API answers with no data (its usual response to a rate limit), that ticker is recorded as a failure in the log and manifest and the rest still load. The free tier also has a small daily request cap, so check Alpha Vantage's current limits before pointing the scheduler at it. The demo and Docker flow use CSV.
 
+The API request asks for Alpha Vantage's `compact` output (the latest 100 trading days) whenever the lookback fits inside it, which is the case for the default 30 days and works on a free key. A lookback of more than about 120 days switches to `full`, which Alpha Vantage may restrict to premium keys. When Alpha Vantage answers with a quota or rate-limit message instead of prices, the message is written to the log.
+
 ### Data lake
 
 Each run writes Parquet and JSON files next to the database load (`lake/` locally, the `lake` volume at `/lake` in Docker; set `LAKE_DIR` to change it, `LAKE_ENABLED=false` to turn it off):
@@ -159,6 +163,8 @@ Reruns are idempotent in both stores: the curated file for a ticker is merged by
 ### REST API
 
 A small read-only FastAPI service over the database. Start it with `docker compose up -d api` or `uvicorn src.api.main:app`; interactive docs are at `http://localhost:8000/docs`.
+
+In Docker the API is published on `127.0.0.1:8000` only, so it is reachable from this machine but not from the network. It is open by default. To require a key, set `API_KEY` in `.env`; every route except `/health` then needs an `X-API-Key` header, for example `curl -H "X-API-Key: $API_KEY" http://localhost:8000/managers`. There is no TLS or per-user access control (see `docs/design_notes.md`).
 
 | Endpoint | Returns |
 |---|---|
@@ -190,6 +196,8 @@ docker compose up -d scheduler                    # or run it as a container
 
 In Docker, the `seed` service runs first and `app` / `scheduler` wait for it, so a fresh `docker compose up -d scheduler` works from an empty database. Run the pipeline once with `docker compose run --rm app`.
 
+A run that loads nothing (for example Alpha Vantage answering with a quota message, or every CSV missing) is treated as a failure: the scheduler logs `Scheduled run FAILED`, and `python -m src.orchestration.run_pipeline` exits with code 1. A partial run, where some tickers failed but others loaded, logs a warning and exits 0. Every run writes a manifest to the lake with its `status` (`success`, `partial`, `no_data` or `failed`).
+
 To check a clean clone end to end (fresh volumes, seed, pipeline, rerun, analytics SQL, scheduler), run `bash scripts/verify_clean_clone.sh`. It deletes the dev database volume.
 
 ### Running integration tests
@@ -210,6 +218,8 @@ pytest                            # everything, unit + integration
 `sql/schema.sql` is applied automatically by the `pg_engine` fixture
 before any integration test runs (it's idempotent, so this is safe
 whether `postgres_test` is a fresh container or a reused one).
+
+The fixtures **empty every table** in the test database before the first test, so leftover rows (for example from running the seed script against it) cannot break the suite. As a safeguard they refuse to run unless the database name ends in `_test`, so pointing `TEST_DATABASE_URL` at the dev database fails instead of wiping it.
 
 ## Roadmap
 
@@ -411,7 +421,6 @@ Result:
  Energy               |     71239.56 |         8.77 |             594.00
 (7 rows)
 ```
-
 
 ## Verification Code
 

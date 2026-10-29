@@ -77,10 +77,11 @@ def test_read_curated_filters_by_ticker_and_handles_empty(tmp_path):
 
 def test_write_manifest_is_valid_json_and_stringifies_odd_types(tmp_path):
     from pathlib import Path
-    path = lake.write_manifest({"rows": 3, "where": Path("/x/y"), "failures": ["a"]}, tmp_path, "RUN1")
+    odd = Path("/x/y")  # json cannot serialise a Path, so the manifest stores str(odd)
+    path = lake.write_manifest({"rows": 3, "where": odd, "failures": ["a"]}, tmp_path, "RUN1")
     assert path == tmp_path / "manifests" / "RUN1.json"
-    data = json.loads(path.read_text())
-    assert data == {"failures": ["a"], "rows": 3, "where": "/x/y"}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data == {"failures": ["a"], "rows": 3, "where": str(odd)}
 
 
 def test_new_run_id_is_sortable_and_filesystem_safe():

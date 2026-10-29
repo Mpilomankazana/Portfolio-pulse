@@ -119,8 +119,11 @@ services:
         condition: service_completed_successfully
     environment:
       <<: *app-env
+      # Optional. When set, every route except /health needs an X-API-Key header.
+      API_KEY: ${API_KEY:-}
     ports:
-      - "8000:8000"
+      # Bound to this machine only; remove the 127.0.0.1 to expose it on the network.
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./:/app
     command: ["python", "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

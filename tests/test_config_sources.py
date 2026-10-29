@@ -15,8 +15,11 @@ def test_comma_separated_relative_paths_resolve_against_project_root():
     assert result == [config.PROJECT_ROOT / "data" / "a.csv", config.PROJECT_ROOT / "data" / "b.csv"]
 
 
-def test_absolute_paths_are_kept_as_is():
-    abs_path = Path("/srv/feeds/prices.csv")
+def test_absolute_paths_are_kept_as_is(tmp_path):
+    # Built from tmp_path so it is absolute on every OS. A literal "/srv/..." is
+    # not absolute on Windows (no drive letter), which is not what is under test.
+    abs_path = tmp_path / "feeds" / "prices.csv"
+    assert abs_path.is_absolute()
     assert config._parse_csv_sources(str(abs_path)) == [abs_path]
 
 

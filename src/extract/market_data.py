@@ -3,15 +3,29 @@
 Phase 2 target: modular extractors, one function per source, each
 returning a raw pandas DataFrame with no cleaning applied yet.
 """
+import logging
 import os
 import time
+from datetime import date
 
 import pandas as pd
 import requests
 
+logger = logging.getLogger(__name__)
+
 API_BASE_URL = "https://www.alphavantage.co/query"
 REQUEST_TIMEOUT_SECONDS = 10
 MAX_RETRIES = 3
+
+# Alpha Vantage's "compact" output is the latest 100 trading days (about 140
+# calendar days) and works on a free key; "full" is the whole history and may
+# be restricted to premium keys. A start date this close to today fits compact.
+# 120 calendar days leaves a margin for weekends and holidays.
+COMPACT_MAX_CALENDAR_DAYS = 120
+
+# Keys Alpha Vantage uses to say "no data, and here is why" while still
+# answering HTTP 200 (rate limit, daily quota, premium-only parameter, bad symbol).
+_PROVIDER_MESSAGE_KEYS = ("Error Message", "Information", "Note")
 
 EXPECTED_COLUMNS = ["ticker", "date", "open", "high", "low", "close", "volume"]
 
@@ -32,12 +46,25 @@ def extract_from_csv(path: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def extract_from_api(ticker: str, start: str, end: str) -> pd.DataFrame:
+def _today() -> date:
+    return date.today()
+
+
+def choose_outputsize(start: str) -> str:
+    """Pick compact if `start` is within the latest-100-days window, otherwise full."""
+    age_days = (_today() - date.fromisoformat(start)).days
+    return "compact" if age_days <= COMPACT_MAX_CALENDAR_DAYS else "full"
+
+
+def extract_from_api(ticker: str, start: str, end: str, outputsize: str | None = None) -> pd.DataFrame:
     """Pull daily OHLCV data for one ticker from Alpha Vantage.
 
     Params:
         ticker: single ticker symbol, e.g. "AAPL".
         start, end: ISO date strings ("YYYY-MM-DD"), inclusive range.
+        outputsize: "compact" or "full". Left as None, it is chosen from
+            `start` (see choose_outputsize), so a short recent lookback
+            uses "compact" and works on a free Alpha Vantage key.
 
     Returns: DataFrame with the same columns as extract_from_csv
     (ticker, date, open, high, low, close, volume) so callers can treat
@@ -60,18 +87,19 @@ def extract_from_api(ticker: str, start: str, end: str) -> pd.DataFrame:
     MAX_RETRIES on 429s raises the same RuntimeError as any other
     non-200 status.
 
-    outputsize=full is requested (rather than Alpha Vantage's default
-    "compact", which caps at the last 100 days) so an arbitrary
-    [start, end] range isn't silently truncated to the last ~100
-    trading days; the full response is then filtered down to the
-    requested range client-side, since the endpoint itself doesn't
-    accept a date range.
+    The endpoint takes no date range, so the response is filtered down to
+    [start, end] client-side. "compact" covers only the latest 100 trading
+    days, so a start date further back than that needs "full", which is
+    chosen automatically (or pass outputsize explicitly).
 
     If the provider has no data in [start, end] for this ticker (e.g.
     a delisted ticker, or a range entirely inside a market holiday
     gap), returns an empty DataFrame with the expected columns rather
     than raising, so downstream code can treat "no data" the same way
-    regardless of source.
+    regardless of source. When the provider answers 200 with an explanation
+    instead of prices (rate limit, daily quota, premium-only request), that
+    message is logged as a warning so the cause is visible, and the result
+    is still the empty frame.
     """
     api_key = os.getenv("MARKET_API_KEY")
     if not api_key:
@@ -83,7 +111,7 @@ def extract_from_api(ticker: str, start: str, end: str) -> pd.DataFrame:
     params = {
         "function": "TIME_SERIES_DAILY",
         "symbol": ticker,
-        "outputsize": "full",
+        "outputsize": outputsize or choose_outputsize(start),
         "apikey": api_key,
     }
 
@@ -92,6 +120,10 @@ def extract_from_api(ticker: str, start: str, end: str) -> pd.DataFrame:
     time_series = payload.get("Time Series (Daily)", {})
 
     if not time_series:
+        for key in _PROVIDER_MESSAGE_KEYS:
+            if payload.get(key):
+                logger.warning("Alpha Vantage returned no prices for %s: %s: %s", ticker, key, str(payload[key])[:300])
+                break
         return pd.DataFrame(columns=EXPECTED_COLUMNS)
 
     records = [

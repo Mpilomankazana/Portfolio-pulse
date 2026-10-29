@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPOSE = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+COMPOSE = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
 SERVICES = COMPOSE["services"]
 APP_SERVICES = ["seed", "app", "scheduler", "api"]
 
@@ -51,7 +51,7 @@ def test_app_services_share_one_image():
 
 
 def test_dockerfile_runs_as_non_root_and_uses_runtime_requirements_only():
-    lines = [l.strip() for l in (ROOT / "Dockerfile").read_text().splitlines()]
+    lines = [l.strip() for l in (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()]
     instructions = [l for l in lines if l and not l.startswith("#")]
     assert "USER appuser" in instructions
     assert any(l.startswith("COPY requirements.txt") for l in instructions)
@@ -59,14 +59,14 @@ def test_dockerfile_runs_as_non_root_and_uses_runtime_requirements_only():
 
 
 def test_dockerignore_keeps_secrets_and_tests_out_of_the_image():
-    lines = {l.strip() for l in (ROOT / ".dockerignore").read_text().splitlines()}
+    lines = {l.strip() for l in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()}
     assert {".env", ".git", "tests"} <= lines
 
 
 def test_runtime_requirements_exclude_dev_tools():
-    runtime = (ROOT / "requirements.txt").read_text().lower()
+    runtime = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
     assert "pytest" not in runtime and "pyyaml" not in runtime
-    dev = (ROOT / "requirements-dev.txt").read_text().lower()
+    dev = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8").lower()
     assert "-r requirements.txt" in dev and "pytest" in dev
 
 
@@ -83,7 +83,8 @@ def test_initdb_mounts_only_the_schema_file(name):
 
 def test_api_service_exposes_8000_and_has_a_healthcheck():
     api = SERVICES["api"]
-    assert "8000:8000" in api["ports"]
+    assert "127.0.0.1:8000:8000" in api["ports"], "publish the API on localhost only"
+    assert "API_KEY" in api["environment"]
     assert api["restart"] == "unless-stopped"
     assert "/health" in " ".join(api["healthcheck"]["test"])
     # the ASGI target in the command must really exist
@@ -100,14 +101,14 @@ def test_pipeline_services_write_the_lake_to_a_named_volume(name):
 
 
 def test_dockerfile_creates_a_lake_dir_the_non_root_user_can_write():
-    text = (ROOT / "Dockerfile").read_text()
+    text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "mkdir /lake" in text and "chown appuser:appuser /lake" in text
     # ownership must be set BEFORE dropping privileges
     assert text.index("chown appuser:appuser /lake") < text.index("USER appuser")
 
 
 def test_web_and_parquet_dependencies_are_runtime_not_dev():
-    runtime = (ROOT / "requirements.txt").read_text().lower()
+    runtime = (ROOT / "requirements.txt").read_text(encoding="utf-8").lower()
     assert all(pkg in runtime for pkg in ("fastapi", "uvicorn", "pyarrow"))
-    dev = (ROOT / "requirements-dev.txt").read_text().lower()
+    dev = (ROOT / "requirements-dev.txt").read_text(encoding="utf-8").lower()
     assert "httpx" in dev and "httpx" not in runtime

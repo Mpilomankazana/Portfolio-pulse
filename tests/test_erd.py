@@ -3,9 +3,9 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = (ROOT / "sql" / "schema.sql").read_text()
-ERD = (ROOT / "docs" / "erd.mmd").read_text()
-README = (ROOT / "README.md").read_text().replace("\r\n", "\n")
+SCHEMA = (ROOT / "sql" / "schema.sql").read_text(encoding="utf-8")
+ERD = (ROOT / "docs" / "erd.mmd").read_text(encoding="utf-8")
+README = (ROOT / "README.md").read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def _schema_tables() -> set[str]:

@@ -67,10 +67,14 @@ state=$(docker inspect -f '{{.State.Status}}' de27four_scheduler)
 docker compose logs scheduler | grep -q "Scheduler started" || { docker compose logs scheduler; fail "scheduler did not report starting"; }
 
 step "REST API starts healthy and serves real data"
+# If an API_KEY is set (environment or .env), the data routes need it.
+api_key="${API_KEY:-$(grep -E '^API_KEY=' .env 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '\r')}"
+auth=()
+[ -z "$api_key" ] || auth=(-H "X-API-Key: $api_key")
 docker compose up -d --wait api
 curl -fsS http://localhost:8000/health | grep -q '"status":"ok"' || fail "API /health not ok"
-curl -fsS http://localhost:8000/managers/rankings | grep -q '"firm_name"' || fail "API returned no rankings"
-curl -fsS "http://localhost:8000/portfolios/1/risk" | grep -q '"var"' || fail "API risk endpoint failed"
+curl -fsS ${auth[@]+"${auth[@]}"} http://localhost:8000/managers/rankings | grep -q '"firm_name"' || fail "API returned no rankings"
+curl -fsS ${auth[@]+"${auth[@]}"} "http://localhost:8000/portfolios/1/risk" | grep -q '"var"' || fail "API risk endpoint failed"
 
 step "Data lake has raw, curated and manifest files (and is writable by the non-root user)"
 docker compose run --rm -T --no-deps app sh -c \

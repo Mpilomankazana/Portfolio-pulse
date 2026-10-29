@@ -25,7 +25,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 # Importing config first: loads .env, validates DATABASE_URL, configures logging.
 from src.orchestration import config
-from src.orchestration.run_pipeline import run as run_pipeline
+from src.orchestration.run_pipeline import check_summary, run as run_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,16 @@ def build_trigger(cron_expr: str, timezone: str) -> CronTrigger:
     )
 
 
+def run_scheduled() -> dict:
+    """What the scheduler actually runs: the pipeline, then a verdict on its summary.
+
+    A run that loads nothing (for example the API answering with a quota
+    message) raises NoDataError, so the listener below logs it as FAILED
+    rather than "completed successfully". A partial run only warns.
+    """
+    return check_summary(run_pipeline())
+
+
 def _on_job_event(event) -> None:
     if event.code == EVENT_JOB_ERROR:
         logger.error("Scheduled run FAILED: %s", event.exception)
@@ -97,7 +107,7 @@ def build_scheduler(cron_expr: str | None = None, timezone: str | None = None) -
 
     scheduler = BlockingScheduler(timezone=timezone)
     scheduler.add_job(
-        run_pipeline,
+        run_scheduled,
         trigger=build_trigger(cron_expr, timezone),
         id=JOB_ID,
         name="PortfolioPulse daily ETL run",
@@ -132,9 +142,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.run_now:
         logger.info("--run-now given: running pipeline once before scheduling")
         try:
-            run_pipeline()
+            run_scheduled()
         except Exception:  # noqa: BLE001 — already logged by run(); don't block the schedule
-            logger.error("Immediate run failed; continuing to scheduled runs")
+            logger.error("Immediate run failed (%s); continuing to scheduled runs", "see log above")
 
     try:
         scheduler.start()

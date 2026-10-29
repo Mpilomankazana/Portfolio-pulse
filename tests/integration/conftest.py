@@ -29,8 +29,26 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
+
+from src.db import with_explicit_driver
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "sql" / "schema.sql"
+
+
+def _assert_test_database(url: str) -> None:
+    """Refuse to run against any database whose name does not end in "_test".
+
+    pg_engine empties every table at the start of a run, so pointing it at
+    the dev database (portfolio_analytics) would wipe real data.
+    """
+    name = make_url(url).database or ""
+    if not name.endswith("_test"):
+        raise RuntimeError(
+            f"Refusing to run integration tests against database {name!r}: the name must "
+            "end in '_test' because the tests empty every table first. Use the postgres_test "
+            "service (portfolio_analytics_test)."
+        )
 
 
 @pytest.fixture(scope="session")
@@ -40,7 +58,9 @@ def pg_engine():
     Deliberately reads a separate TEST_DATABASE_URL env var rather than
     falling back to src.db.DATABASE_URL (or its default), so a missing
     env var can never silently point integration tests at a real
-    dev/prod database — it's a hard failure instead.
+    dev/prod database — it's a hard failure instead. The database name
+    must also end in "_test", and every table is emptied before the
+    first test, so leftover data from a seeded run cannot break the suite.
     """
     test_database_url = os.getenv("TEST_DATABASE_URL")
     if not test_database_url:
@@ -53,11 +73,17 @@ def pg_engine():
             "that could point at a real dev/prod database."
         )
 
-    engine = create_engine(test_database_url, future=True)
+    _assert_test_database(test_database_url)
+    engine = create_engine(with_explicit_driver(test_database_url), future=True)
 
-    schema_sql = SCHEMA_PATH.read_text()
+    schema_sql = SCHEMA_PATH.read_text(encoding="utf-8")
     with engine.begin() as conn:
         conn.execute(text(schema_sql))
+        # Start from empty tables, so rows left by an earlier seed or pipeline run
+        # (committed, so a rollback cannot undo them) cannot collide with the tests.
+        tables = conn.execute(text("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")).scalars().all()
+        if tables:
+            conn.execute(text("TRUNCATE " + ", ".join(f'"{t}"' for t in tables) + " RESTART IDENTITY CASCADE"))
 
     yield engine
 

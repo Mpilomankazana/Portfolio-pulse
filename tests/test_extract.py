@@ -11,7 +11,10 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from src.extract.market_data import extract_from_csv, extract_from_api
+from datetime import date
+
+from src.extract import market_data
+from src.extract.market_data import extract_from_csv, extract_from_api, choose_outputsize
 
 
 class TestExtractFromCsv:
@@ -177,3 +180,53 @@ class TestExtractFromApi:
         ) as mock_get:
             extract_from_api("AAPL", "2026-01-01", "2026-01-31")
         assert mock_get.call_args.kwargs["timeout"] == 10
+
+class TestOutputsize:
+    """compact works on a free Alpha Vantage key; full may not, so only ask for it when needed."""
+
+    @pytest.fixture(autouse=True)
+    def fixed_today(self, monkeypatch):
+        monkeypatch.setattr(market_data, "_today", lambda: date(2026, 10, 28))
+
+    def test_recent_start_uses_compact(self):
+        assert choose_outputsize("2026-09-28") == "compact"  # 30 days back
+
+    def test_boundary_is_inclusive(self):
+        assert choose_outputsize("2026-06-30") == "compact"  # exactly 120 days
+        assert choose_outputsize("2026-06-29") == "full"     # 121 days
+
+    def test_old_start_uses_full(self):
+        assert choose_outputsize("2025-01-01") == "full"
+
+    def test_request_sends_the_chosen_outputsize(self, monkeypatch):
+        monkeypatch.setenv("MARKET_API_KEY", "fake-key")
+        payload = _alpha_vantage_payload(("2026-10-20", 1, 1, 1, 1, 1))
+        with patch("src.extract.market_data.requests.get", return_value=_mock_response(200, payload)) as get:
+            extract_from_api("AAPL", "2026-10-01", "2026-10-28")
+        assert get.call_args.kwargs["params"]["outputsize"] == "compact"
+
+    def test_explicit_outputsize_wins(self, monkeypatch):
+        monkeypatch.setenv("MARKET_API_KEY", "fake-key")
+        payload = _alpha_vantage_payload(("2026-10-20", 1, 1, 1, 1, 1))
+        with patch("src.extract.market_data.requests.get", return_value=_mock_response(200, payload)) as get:
+            extract_from_api("AAPL", "2026-10-01", "2026-10-28", outputsize="full")
+        assert get.call_args.kwargs["params"]["outputsize"] == "full"
+
+
+class TestProviderMessages:
+    @pytest.mark.parametrize("key", ["Information", "Note", "Error Message"])
+    def test_provider_explanation_is_logged_and_result_is_empty(self, monkeypatch, caplog, key):
+        monkeypatch.setenv("MARKET_API_KEY", "fake-key")
+        payload = {key: "daily quota reached"}
+        with patch("src.extract.market_data.requests.get", return_value=_mock_response(200, payload)):
+            with caplog.at_level("WARNING"):
+                df = extract_from_api("AAPL", "2026-10-01", "2026-10-28")
+        assert df.empty
+        assert "daily quota reached" in caplog.text and "AAPL" in caplog.text
+
+    def test_plain_empty_response_logs_nothing(self, monkeypatch, caplog):
+        monkeypatch.setenv("MARKET_API_KEY", "fake-key")
+        with patch("src.extract.market_data.requests.get", return_value=_mock_response(200, {"Time Series (Daily)": {}})):
+            with caplog.at_level("WARNING"):
+                extract_from_api("AAPL", "2026-10-01", "2026-10-28")
+        assert caplog.text == ""

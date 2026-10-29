@@ -7,6 +7,7 @@ from apscheduler.events import EVENT_JOB_ERROR
 from zoneinfo import ZoneInfo
 
 from src.orchestration import scheduler as sched_mod
+from src.orchestration.run_pipeline import NoDataError
 
 
 def test_build_trigger_rejects_malformed_cron():
@@ -36,7 +37,7 @@ def test_build_scheduler_registers_single_safe_job():
     assert len(jobs) == 1
     job = jobs[0]
     assert job.id == sched_mod.JOB_ID
-    assert job.func is sched_mod.run_pipeline
+    assert job.func is sched_mod.run_scheduled
     assert job.max_instances == 1
     assert job.coalesce is True
     assert job.misfire_grace_time == sched_mod.MISFIRE_GRACE_SECONDS
@@ -97,3 +98,39 @@ def test_translate_day_of_week(dow, expected):
 def test_translate_day_of_week_rejects_out_of_range():
     with pytest.raises(ValueError):
         sched_mod._translate_day_of_week("8")
+
+class TestRunScheduled:
+    """A run that loads nothing must not be reported as a success."""
+
+    def _summary(self, status, **extra):
+        return {"run_id": "r1", "source": "api", "status": status,
+                "source_failures": extra.pop("source_failures", []), "lake_errors": [], **extra}
+
+    def test_success_passes_the_summary_through(self, monkeypatch):
+        monkeypatch.setattr(sched_mod, "run_pipeline", lambda: self._summary("success"))
+        assert sched_mod.run_scheduled()["status"] == "success"
+
+    def test_no_data_raises_so_the_listener_logs_failed(self, monkeypatch):
+        monkeypatch.setattr(sched_mod, "run_pipeline", lambda: self._summary(
+            "no_data", source_failures=["AAPL: API returned no rows"]))
+        with pytest.raises(NoDataError, match="AAPL"):
+            sched_mod.run_scheduled()
+
+    def test_partial_warns_but_does_not_raise(self, monkeypatch, caplog):
+        monkeypatch.setattr(sched_mod, "run_pipeline", lambda: self._summary(
+            "partial", source_failures=["MSFT: boom"]))
+        with caplog.at_level("WARNING"):
+            assert sched_mod.run_scheduled()["status"] == "partial"
+        assert "PARTIAL" in caplog.text and "MSFT" in caplog.text
+
+    def test_lake_errors_warn(self, monkeypatch, caplog):
+        monkeypatch.setattr(sched_mod, "run_pipeline", lambda: self._summary("success", lake_errors=["land_raw: disk full"]))
+        with caplog.at_level("WARNING"):
+            sched_mod.run_scheduled()
+        assert "disk full" in caplog.text
+
+    def test_listener_reports_a_no_data_run_as_failed(self, caplog):
+        event = MagicMock(code=EVENT_JOB_ERROR, exception=RuntimeError("loaded no data"))
+        with caplog.at_level("ERROR"):
+            sched_mod._on_job_event(event)
+        assert "FAILED" in caplog.text and "loaded no data" in caplog.text

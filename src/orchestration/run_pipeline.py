@@ -17,6 +17,7 @@ Lake writes (src/load/lake.py) are best-effort: a failure there is logged
 and recorded in the manifest, but never fails the database load.
 """
 import logging
+import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -240,5 +241,43 @@ def run() -> dict:
             logger.info("Run manifest written to %s", manifest_path)
 
 
+class NoDataError(RuntimeError):
+    """The run finished without loading anything (every source failed or returned no rows)."""
+
+
+def check_summary(summary: dict) -> dict:
+    """Turn a finished run's summary into a verdict callers can act on.
+
+    "no_data" raises NoDataError: nothing was loaded, which is a failure even
+    though no exception happened inside run() (an API quota or rate limit
+    comes back as an empty answer, not an error). "partial" and lake errors
+    only warn, because the database load itself did succeed.
+    """
+    status = summary.get("status")
+    if status == "no_data":
+        raise NoDataError(
+            f"run {summary.get('run_id')} loaded no data from source '{summary.get('source')}': "
+            f"{summary.get('source_failures') or 'sources returned no rows'}"
+        )
+    if status == "partial":
+        logger.warning(
+            "Run %s was PARTIAL: %d source(s) failed: %s",
+            summary.get("run_id"), len(summary["source_failures"]), summary["source_failures"],
+        )
+    if summary.get("lake_errors"):
+        logger.warning("Run %s had lake errors (database load unaffected): %s", summary.get("run_id"), summary["lake_errors"])
+    return summary
+
+
+def main() -> int:
+    """Command-line entry: exit 0 on success or partial, 1 when nothing was loaded."""
+    try:
+        check_summary(run())
+    except NoDataError as exc:
+        logger.error("%s", exc)
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
-    run()
+    sys.exit(main())
